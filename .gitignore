@@ -1,0 +1,20 @@
+# Build output & Executables
+release/
+dist/
+build/
+*.exe
+*.asar
+
+# Chromium & External Binaries
+chromium/
+
+# Database, Backups & Logs
+data/
+labflow-database-backup/
+*.wt
+*.gz
+*.log
+
+# Dependencies
+node_modules/
+.env
