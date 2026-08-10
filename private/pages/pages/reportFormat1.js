@@ -586,7 +586,7 @@
 
             publicReportUrlPending = (async () => {
                 const payload = await collectPdfPayload({ bookingId: report?.bookingId }, { skipQrReadiness: true, withBackground: true });
-
+                console.log("cloud api payload:", payload);
                 const response = await fetch('/api/v1/user/offline-report-link', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
