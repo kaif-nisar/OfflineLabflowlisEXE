@@ -675,10 +675,12 @@ if (process.env.NODE_ENV === "production" && !OFFLINE_MODE && !DESKTOP_RUNTIME) 
 
 import targetRouter from "./src/routes/target.routes.js";
 import maintenanceRouter from "./src/routes/maintenance.routes.js";
+import offlineMigrationRouter from "./src/routes/offlineMigration.routes.js";
 
 app.use("/api/v1/user", userRouter);
 app.use("/api/v1/target", targetRouter);
 app.use("/api/maintenance", maintenanceRouter);
+app.use("/api/v1/offline-migration", offlineMigrationRouter);
 
 // Health Check Route
 app.get('/health', (req, res) => {

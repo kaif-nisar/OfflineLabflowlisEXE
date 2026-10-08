@@ -2,7 +2,7 @@
   "name": "labflow-offline-desktop",
   "description": "LabFlow - Advanced Pathology Software",
   "author": "LabFlow",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
