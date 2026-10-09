@@ -156,7 +156,7 @@ const updateBookingStatus = asyncHandler(async (req, res) => {
     const booking = await Booking.findByIdAndUpdate(
       bookingId, 
       { status, updatedAt: new Date() }, 
-      { returnDocument: 'after' }
+      { new: true }
     );
     
     // Trigger appropriate notifications based on status

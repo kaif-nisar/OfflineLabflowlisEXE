@@ -1,7 +1,7 @@
 // Global variables for charts
-let revenueChart = null;
-let modelUsageChart = null;
-let currentRevenueView = "monthly";
+var revenueChart = null;
+var modelUsageChart = null;
+var currentRevenueView = "monthly";
 
 // API Base URL - Change this to your backend URL
 const API_BASE_URL = "/api/v1/user";
@@ -24,7 +24,7 @@ class Dashboard {
   }
 
   async loadDashboardData() {
-    await Promise.all([
+    await Promise.allSettled([
       this.loadStats(),
       this.loadRecentClients(),
       this.loadTopFranchisees(),
@@ -33,9 +33,9 @@ class Dashboard {
   }
 
   async apiCall(endpoint, options = {}) {
-
     try {
       const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+        credentials: "include",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${localStorage.getItem("token") || ""}`,
@@ -66,6 +66,10 @@ class Dashboard {
   renderStats(stats) {
     console.log(stats)
     const container = document.getElementById("statsContainer");
+    if (!container || !stats?.data) {
+      console.warn("Stats container or data missing, skipping stats render");
+      return;
+    }
     container.innerHTML = `
                     <div class="stat-card" onclick="dashboard.navigateToClients()">
                         <div class="stat-icon clients-icon">
@@ -248,21 +252,26 @@ class Dashboard {
   async loadNotifications() {
     try {
       const notifications = await this.apiCall("/dashboard/notifications");
-      this.renderNotifications(notifications);
+      this.renderNotifications(notifications?.data || notifications);
     } catch (error) {
       this.renderNotifications(this.getMockNotifications());
     }
   }
 
   renderNotifications(notifications) {
-    console.log(notifications)
+    const list = Array.isArray(notifications) ? notifications : notifications?.data || [];
     const container = document.getElementById("notificationsContainer");
-    container.innerHTML = notifications
+    if (!container) return;
+    if (!list.length) {
+      container.innerHTML = '<div style="padding: 16px; color: #718096; text-align: center;">No new notifications</div>';
+      return;
+    }
+    container.innerHTML = list
       .map(
         (notification) => `
                     <div class="notification-item">
                         <div class="notification-icon icon-${
-                          notification.type
+                          notification.type || "info"
                         }">
                             <i class="fas fa-${this.getNotificationIcon(
                               notification.type
@@ -270,7 +279,7 @@ class Dashboard {
                         </div>
                         <div class="notification-content">
                             <div class="notification-message">${
-                              notification.message
+                              notification.message || ""
                             }</div>
                             <div class="notification-time">${this.formatTime(
                               notification.time
@@ -308,49 +317,114 @@ class Dashboard {
     await this.initModelUsageChart();
   }
 
-  
-async initRevenueChart() {
-  try {
-    const response = await this.apiCall(
-      `/dashboard/revenue-data?period=${currentRevenueView}`
-    );
-    console.log("Revenue API response:", response);
-    this.renderRevenueChart(response.data); // Pass response.data instead of response
-  } catch (error) {
-    console.error("Error loading revenue data:", error);
-    this.renderRevenueChart(this.getMockRevenueData(currentRevenueView));
-  }
-}
-
-renderRevenueChart(data) {
-  console.log("Revenue chart data being rendered:", data);
-  
-  const canvasElement = document.getElementById("revenueChart");
-  if (!canvasElement) {
-    console.error("Canvas element 'revenueChart' not found!");
-    return;
-  }
-  
-  const ctx = canvasElement.getContext("2d");
-
-  if (revenueChart) {
-    revenueChart.destroy();
+  async initRevenueChart() {
+    try {
+      const response = await this.apiCall(
+        `/dashboard/revenue-data?period=${currentRevenueView}`
+      );
+      console.log("Revenue API response:", response);
+      this.renderRevenueChart(response.data);
+    } catch (error) {
+      console.error("Error loading revenue data:", error);
+      this.renderRevenueChart(this.getMockRevenueData(currentRevenueView));
+    }
   }
 
-  try {
-    revenueChart = new Chart(ctx, {
-      type: "line",
+  renderRevenueChart(data) {
+    console.log("Revenue chart data being rendered:", data);
+    
+    const canvasElement = document.getElementById("revenueChart");
+    if (!canvasElement) {
+      console.warn("Canvas element 'revenueChart' not found, skipping chart render");
+      return;
+    }
+    
+    const ctx = canvasElement.getContext("2d");
+
+    if (revenueChart) {
+      revenueChart.destroy();
+    }
+
+    try {
+      revenueChart = new Chart(ctx, {
+        type: "line",
+        data: {
+          labels: data.labels,
+          datasets: [
+            {
+              label: "Revenue",
+              data: data.values,
+              borderColor: "#667eea",
+              backgroundColor: "rgba(102, 126, 234, 0.1)",
+              borderWidth: 3,
+              fill: true,
+              tension: 0.4,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              display: false,
+            },
+          },
+          scales: {
+            y: {
+              beginAtZero: true,
+              ticks: {
+                callback: function (value) {
+                  return "$" + value.toLocaleString();
+                },
+              },
+            },
+          },
+        },
+      });
+      console.log("Revenue chart created successfully");
+    } catch (error) {
+      console.error("Error creating revenue chart:", error);
+    }
+  }
+
+  async initModelUsageChart() {
+    try {
+      const response = await this.apiCall("/dashboard/model-usage");
+      this.renderModelUsageChart(response.data);
+    } catch (error) {
+      this.renderModelUsageChart(this.getMockModelData());
+    }
+  }
+
+  renderModelUsageChart(data) {
+    console.log("Model chart data:", data);
+    const canvasElement = document.getElementById("modelUsageChart");
+    if (!canvasElement) {
+      console.warn("Canvas element 'modelUsageChart' not found, skipping chart render");
+      return;
+    }
+    
+    const ctx = canvasElement.getContext("2d");
+
+    if (modelUsageChart) {
+      modelUsageChart.destroy();
+    }
+
+    modelUsageChart = new Chart(ctx, {
+      type: "doughnut",
       data: {
         labels: data.labels,
         datasets: [
           {
-            label: "Revenue",
             data: data.values,
-            borderColor: "#667eea",
-            backgroundColor: "rgba(102, 126, 234, 0.1)",
-            borderWidth: 3,
-            fill: true,
-            tension: 0.4,
+            backgroundColor: [
+              "#667eea",
+              "#764ba2", 
+              "#f093fb",
+              "#f5576c",
+              "#4facfe",
+            ],
           },
         ],
       },
@@ -359,129 +433,13 @@ renderRevenueChart(data) {
         maintainAspectRatio: false,
         plugins: {
           legend: {
-            display: false,
-          },
-        },
-        scales: {
-          y: {
-            beginAtZero: true,
-            ticks: {
-              callback: function (value) {
-                return "$" + value.toLocaleString();
-              },
-            },
+            position: "bottom",
           },
         },
       },
     });
-    console.log("Revenue chart created successfully");
-  } catch (error) {
-    console.error("Error creating revenue chart:", error);
-  }
-}
-
- async initModelUsageChart() {
-  try {
-    const response = await this.apiCall("/dashboard/model-usage");
-    this.renderModelUsageChart(response.data); // Pass response.data instead of response
-  } catch (error) {
-    this.renderModelUsageChart(this.getMockModelData());
-  }
-}
-
-renderModelUsageChart(data) {
-  console.log("Model chart data:", data);
-  const ctx = document.getElementById("modelUsageChart").getContext("2d");
-
-  if (modelUsageChart) {
-    modelUsageChart.destroy();
   }
 
-  modelUsageChart = new Chart(ctx, {
-    type: "doughnut",
-    data: {
-      labels: data.labels,
-      datasets: [
-        {
-          data: data.values,
-          backgroundColor: [
-            "#667eea",
-            "#764ba2", 
-            "#f093fb",
-            "#f5576c",
-            "#4facfe",
-          ],
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {
-          position: "bottom",
-        },
-      },
-    },
-  });
-}
-
-async initRevenueChart() {
-  try {
-    const response = await this.apiCall(
-      `/dashboard/revenue-data?period=${currentRevenueView}`
-    );
-    this.renderRevenueChart(response.data); // Pass response.data instead of response
-  } catch (error) {
-    this.renderRevenueChart(this.getMockRevenueData(currentRevenueView));
-  }
-}
-
-renderRevenueChart(data) {
-  console.log("Revenue chart data:", data);
-  const ctx = document.getElementById("revenueChart").getContext("2d");
-
-  if (revenueChart) {
-    revenueChart.destroy();
-  }
-
-  revenueChart = new Chart(ctx, {
-    type: "line",
-    data: {
-      labels: data.labels,
-      datasets: [
-        {
-          label: "Revenue",
-          data: data.values,
-          borderColor: "#667eea",
-          backgroundColor: "rgba(102, 126, 234, 0.1)",
-          borderWidth: 3,
-          fill: true,
-          tension: 0.4,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {
-          display: false,
-        },
-      },
-      scales: {
-        y: {
-          beginAtZero: true,
-          ticks: {
-            callback: function (value) {
-              return "$" + value.toLocaleString();
-            },
-          },
-        },
-      },
-    },
-  });
-}
   setupEventListeners() {
     // Auto-refresh data every 5 minutes
     setInterval(() => {
@@ -495,10 +453,16 @@ renderRevenueChart(data) {
   }
 
   showError(message) {
+    const dashboardContainer = document.querySelector(".dashboard-container");
+    if (!dashboardContainer) {
+      console.warn("Dashboard container not found, cannot show error:", message);
+      return;
+    }
+
     const errorDiv = document.createElement("div");
     errorDiv.className = "error-message";
     errorDiv.textContent = message;
-    document.querySelector(".dashboard-container").prepend(errorDiv);
+    dashboardContainer.prepend(errorDiv);
 
     setTimeout(() => {
       errorDiv.remove();
@@ -507,35 +471,59 @@ renderRevenueChart(data) {
 
   // Navigation methods
   navigateToClients() {
-    window.location.href = "/clients";
+    if (window.router) {
+      window.router.loadPage('clients');
+    } else {
+      window.location.href = "?page=clients";
+    }
   }
 
   navigateToBookings() {
-    window.location.href = "/bookings";
+    if (window.router) {
+      window.router.loadPage('test');
+    } else {
+      window.location.href = "?page=test";
+    }
   }
 
   navigateToModels() {
-    window.location.href = "/models";
+    if (window.router) {
+      window.router.loadPage('models');
+    } else {
+      window.location.href = "?page=models";
+    }
   }
 
   navigateToRevenue() {
-    window.location.href = "/revenue";
+    if (window.router) {
+      window.router.loadPage('expense');
+    } else {
+      window.location.href = "?page=expense";
+    }
   }
 
   viewClient(clientId) {
-    window.location.href = `/clients/${clientId}`;
+    if (window.router) {
+      window.router.loadPage('clients');
+    } else {
+      window.location.href = "?page=clients";
+    }
   }
 
   editClient(clientId) {
-    window.location.href = `/clients/${clientId}/edit`;
+    if (window.router) {
+      window.router.loadPage('clients');
+    } else {
+      window.location.href = "?page=clients";
+    }
   }
 
   viewAllClients() {
-    window.location.href = "/clients";
+    this.navigateToClients();
   }
 
   viewAllFranchisees() {
-    window.location.href = "/franchisees";
+    this.navigateToClients();
   }
 
   async markAllAsRead() {
@@ -552,10 +540,12 @@ renderRevenueChart(data) {
   // Mock data methods (fallback when API is not available)
   getMockStats() {
     return {
-      totalClients: 1247,
-      activeBookings: 3890,
-      activeModels: 42,
-      totalRevenue: 219500,
+      data: {
+        totalClients: 1247,
+        totalTest: 3890,
+        activeModels: 42,
+        totalRevenue: 219500,
+      },
     };
   }
 
@@ -695,13 +685,14 @@ renderRevenueChart(data) {
 }
 
 // Global functions for button clicks
-async function updateRevenueChart(period) {
+window.updateRevenueChart = async function(period) {
   currentRevenueView = period;
-  await dashboard.initRevenueChart();
-}
+  if (window.dashboard) {
+    await window.dashboard.initRevenueChart();
+  }
+};
 
-function exportModelData() {
-  // Create CSV data
+window.exportModelData = function() {
   const data = [
     ["Model", "Usage Percentage"],
     ["4-Layer Enterprise", "35%"],
@@ -719,21 +710,19 @@ function exportModelData() {
   a.download = "model-usage-data.csv";
   a.click();
   window.URL.revokeObjectURL(url);
-}
+};
 
-function viewAllClients() {
-  dashboard.viewAllClients();
-}
+window.viewAllClients = function() {
+  window.dashboard?.viewAllClients();
+};
 
-function viewAllFranchisees() {
-  dashboard.viewAllFranchisees();
-}
+window.viewAllFranchisees = function() {
+  window.dashboard?.viewAllFranchisees();
+};
 
-function markAllAsRead() {
-  dashboard.markAllAsRead();
-}
+window.markAllAsRead = function() {
+  window.dashboard?.markAllAsRead();
+};
 
 // Initialize dashboard when page loads
-let dashboard;
-  dashboard = new Dashboard();
-
+window.dashboard = new Dashboard();

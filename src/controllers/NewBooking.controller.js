@@ -9,6 +9,7 @@ import { addPannel } from "../models/AddPannel.model.js";
 import { Package } from "../models/addPackage.model.js";
 import { Ledger } from "../models/ledger.model.js";
 import { acceptedBarcode } from "../models/samples.model.js";
+import { reports } from "../models/reportData.model.js";
 import mongoose from "mongoose";
 import { Conversation } from "../models/message.model.js";
 import { bookedTestsresult } from "../models/Testvalues.model.js";
@@ -30,6 +31,15 @@ const canManageBookingsAcrossTenant = (req) => (
 );
 
 const normalizeOptionalEmail = (value) => String(value || "").trim().toLowerCase();
+
+const resolveBookingStatusFromReport = (reportDoc = {}) => {
+    const status = String(reportDoc?.status || "").trim();
+    if (status.toLowerCase().includes("partial")) {
+        return "Partially Completed";
+    }
+
+    return "completed";
+};
 
 const buildDoctorSnapshot = (doctor = {}, fallback = {}) => {
     const displayName = String(
@@ -156,11 +166,442 @@ const syncAcceptedBarcodesForBooking = async ({ tenantId, bookingId, tableData, 
         },
         {
             upsert: true,
-            returnDocument: 'after',
+            returnDocument: "after",
             setDefaultsOnInsert: true,
             ...(session ? { session } : {})
         }
     );
+};
+
+const parseBooleanFlag = (value) => (
+    value === true
+    || value === "true"
+    || value === 1
+    || value === "1"
+);
+
+const normalizeOptionalObjectIdInput = (value, fieldName = "ObjectId") => {
+    if (value === null || typeof value === "undefined") {
+        return null;
+    }
+
+    const normalizedValue = String(value).trim();
+    if (!normalizedValue || normalizedValue === "null" || normalizedValue === "undefined") {
+        return null;
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(normalizedValue)) {
+        throw new ApiError(400, `${fieldName} is invalid`);
+    }
+
+    return normalizedValue;
+};
+
+const dedupeDisplayStrings = (items = []) => {
+    const seen = new Set();
+
+    return (Array.isArray(items) ? items : []).reduce((accumulator, item) => {
+        const normalizedValue = String(item || "").trim();
+        const normalizedKey = normalizedValue.toLowerCase();
+        if (!normalizedValue || seen.has(normalizedKey)) {
+            return accumulator;
+        }
+
+        seen.add(normalizedKey);
+        accumulator.push(normalizedValue);
+        return accumulator;
+    }, []);
+};
+
+const dedupeBookingRowIds = (ids = []) => {
+    const seen = new Set();
+
+    return (Array.isArray(ids) ? ids : []).reduce((accumulator, item) => {
+        const id = item?.id?.toString?.() || String(item?.id || "").trim();
+        const collectionName = String(item?.collectionName || "").trim();
+        if (!id || !collectionName) {
+            return accumulator;
+        }
+
+        const itemKey = `${collectionName}:${id}`;
+        if (seen.has(itemKey)) {
+            return accumulator;
+        }
+
+        seen.add(itemKey);
+        accumulator.push({
+            id,
+            collectionName
+        });
+        return accumulator;
+    }, []);
+};
+
+const normalizeBookingTableRows = (tableData = []) => (
+    (Array.isArray(tableData) ? tableData : []).map((entry) => {
+        const normalizedBarcode = String(entry?.confirmBarcodeId || entry?.barcodeId || "").trim();
+        const normalizedNames = dedupeDisplayStrings(
+            typeof entry?.testName === "string" ? entry.testName.split(",") : []
+        );
+
+        return {
+            typeOfSample: String(entry?.typeOfSample || "").trim() || "Unknown",
+            barcodeId: normalizedBarcode,
+            confirmBarcodeId: normalizedBarcode,
+            testName: normalizedNames.join(", "),
+            ids: dedupeBookingRowIds(entry?.ids)
+        };
+    })
+);
+
+const normalizeBookingSelectionType = (value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+
+    if (normalized === "test" || normalized === "testschema") return "test";
+    if (normalized === "panel" || normalized === "panels" || normalized === "pannel" || normalized === "addpannel") {
+        return "panel";
+    }
+    if (normalized === "package" || normalized === "packages") return "package";
+
+    return null;
+};
+
+const buildBookingSelectionKey = (itemType, itemId) => {
+    const normalizedType = normalizeBookingSelectionType(itemType);
+    const normalizedId = itemId?.toString?.() || String(itemId || "").trim();
+
+    if (!normalizedType || !normalizedId) {
+        return "";
+    }
+
+    return `${normalizedType}:${normalizedId}`;
+};
+
+const normalizeRequestedSelectionItems = (selectedItems = [], fallbackIds = []) => {
+    if (Array.isArray(selectedItems) && selectedItems.length > 0) {
+        const map = new Map();
+
+        selectedItems.forEach((item) => {
+            const itemType = normalizeBookingSelectionType(item?.itemType || item?.collectionName);
+            const itemId = item?.itemId?.toString?.() || item?.id?.toString?.() || String(item?.itemId || item?.id || "").trim();
+            const itemKey = buildBookingSelectionKey(itemType, itemId);
+
+            if (!itemKey) {
+                return;
+            }
+
+            map.set(itemKey, {
+                itemType,
+                itemId,
+                selectedViaGroupId: item?.selectedViaGroupId || null,
+                selectedViaGroupName: item?.selectedViaGroupName || ""
+            });
+        });
+
+        return Array.from(map.values());
+    }
+
+    if (!Array.isArray(fallbackIds)) {
+        return [];
+    }
+
+    return [...new Set(
+        fallbackIds
+            .map((item) => item?.toString?.() || String(item || "").trim())
+            .filter(Boolean)
+    )].map((itemId) => ({
+        itemType: null,
+        itemId,
+        selectedViaGroupId: null,
+        selectedViaGroupName: ""
+    }));
+};
+
+const buildStoredSelectionLookup = (booking) => {
+    const storedItems = Array.isArray(booking?.selectedItems) ? booking.selectedItems : [];
+
+    return new Map(
+        storedItems
+            .map((item) => {
+                const itemKey = buildBookingSelectionKey(item?.itemType, item?.itemId);
+                if (!itemKey) {
+                    return null;
+                }
+
+                return [itemKey, item];
+            })
+            .filter(Boolean)
+    );
+};
+
+const isRecoverableEditSelectionError = (error) => {
+    const message = String(error?.message || "").toLowerCase();
+
+    return (
+        message.includes("not available for the chosen doctor")
+        || message.includes("selected doctor was not found")
+    );
+};
+
+const buildEditSelectionSnapshot = async ({
+    req,
+    bookingUserId,
+    doctorId,
+    selectedItems = [],
+    fallbackIds = [],
+    existingBooking = null
+}) => {
+    try {
+        return await buildValidatedSelectionSnapshot({
+            req,
+            bookingUserId,
+            doctorId,
+            selectedItems,
+            fallbackIds
+        });
+    } catch (error) {
+        if (!isRecoverableEditSelectionError(error)) {
+            throw error;
+        }
+
+        const normalizedRequestedItems = normalizeRequestedSelectionItems(selectedItems, fallbackIds);
+        if (normalizedRequestedItems.length === 0) {
+            return [];
+        }
+
+        const storedSelectionLookup = buildStoredSelectionLookup(existingBooking);
+        const resolvedItems = [];
+        const unavailableItems = [];
+        let resolvedDoctor = null;
+        let resolvedDoctorMode = true;
+
+        for (const requestedItem of normalizedRequestedItems) {
+            try {
+                const snapshot = await buildValidatedSelectionSnapshot({
+                    req,
+                    bookingUserId,
+                    doctorId,
+                    selectedItems: [requestedItem],
+                    fallbackIds: []
+                });
+
+                if (!resolvedDoctor && snapshot?.doctor) {
+                    resolvedDoctor = snapshot.doctor;
+                    resolvedDoctorMode = snapshot.isSelfDoctor;
+                }
+
+                if (Array.isArray(snapshot?.selectedItems) && snapshot.selectedItems[0]) {
+                    resolvedItems.push({
+                        ...snapshot.selectedItems[0],
+                        selectedViaGroupId: requestedItem.selectedViaGroupId || snapshot.selectedItems[0].selectedViaGroupId || null,
+                        selectedViaGroupName: requestedItem.selectedViaGroupName || snapshot.selectedItems[0].selectedViaGroupName || ""
+                    });
+                    continue;
+                }
+            } catch (itemError) {
+                const storedItem = storedSelectionLookup.get(
+                    buildBookingSelectionKey(requestedItem.itemType, requestedItem.itemId)
+                );
+
+                if (storedItem) {
+                    resolvedItems.push({
+                        ...(storedItem.toObject?.() || storedItem),
+                        selectedViaGroupId: requestedItem.selectedViaGroupId || storedItem.selectedViaGroupId || null,
+                        selectedViaGroupName: requestedItem.selectedViaGroupName || storedItem.selectedViaGroupName || ""
+                    });
+                    continue;
+                }
+
+                if (!isRecoverableEditSelectionError(itemError)) {
+                    throw itemError;
+                }
+
+                unavailableItems.push(
+                    buildBookingSelectionKey(requestedItem.itemType, requestedItem.itemId) || requestedItem.itemId
+                );
+            }
+        }
+
+        if (unavailableItems.length > 0) {
+            throw new ApiError(
+                400,
+                `Selected items are not available for update: ${[...new Set(unavailableItems)].join(", ")}`
+            );
+        }
+
+        if (!resolvedDoctor) {
+            resolvedDoctor = {
+                _id: doctorId || existingBooking?.savedDoctorId || null,
+                displayName: existingBooking?.savedDoctor || "",
+                email: existingBooking?.savedDoctorEmail || "",
+                firstName: "",
+                lastName: ""
+            };
+            resolvedDoctorMode = false;
+        }
+
+        return {
+            doctor: resolvedDoctor,
+            isSelfDoctor: resolvedDoctorMode,
+            selectedItems: resolvedItems,
+            total: resolvedItems.reduce((sum, item) => sum + Number(item?.price || 0), 0)
+        };
+    }
+};
+
+const matchesBookingSampleType = (sampleTypeCandidates = [], targetSample = '', isSingleSample = false) => {
+    if (isSingleSample) return true;
+    const normalizedTarget = String(targetSample || '').trim().toLowerCase();
+    if (!normalizedTarget) return true;
+
+    const normalizedCandidates = sampleTypeCandidates
+        .map(s => String(s || '').trim().toLowerCase())
+        .filter(Boolean);
+
+    if (normalizedCandidates.length === 0) return true;
+
+    return normalizedCandidates.some(c =>
+        c === normalizedTarget || c.includes(normalizedTarget) || normalizedTarget.includes(c)
+    );
+};
+
+const buildAcceptedBarcodeRowsForSync = async ({ tenantId, bookingId, tableData = [] }) => {
+    const acceptedBarcodeRows = [];
+    const isSingleSampleBooking = tableData.length <= 1;
+
+    for (const element of tableData) {
+        const ids = Array.isArray(element?.ids) ? element.ids : [];
+        const targetSample = String(element?.typeOfSample || '').trim();
+
+        const testResults = await Promise.all(
+            ids.map(async obj => {
+                if (!obj || !obj.id) return { names: [], objects: [] };
+
+                const normCol = String(obj.collectionName || '').toLowerCase();
+
+                if (normCol === "testschema" || normCol === "test") {
+                    const doc = await testSchema.findById(obj.id).select('Name Short_name');
+                    if (!doc) return { names: [], objects: [] };
+                    const name = doc.Name || doc.Short_name || '';
+                    return { names: name ? [name] : [], objects: [{ id: doc._id, collectionName: "testSchema" }] };
+                }
+
+                if (normCol === "addpannel" || normCol === "panel" || normCol === "pannel") {
+                    const doc = await addPannel.findById(obj.id).select('name Short_name');
+                    if (!doc) return { names: [], objects: [] };
+                    const name = doc.name || doc.Short_name || '';
+                    return { names: name ? [name] : [], objects: [{ id: doc._id, collectionName: "addPannel" }] };
+                }
+
+                if (normCol === "package") {
+                    const doc = await Package.findById(obj.id)
+                        .select('packageName testIds pannelIds testSample pannelSample')
+                        .populate('testIds pannelIds')
+                        || await Package.findOne({ originalPackageId: obj.id })
+                        .select('packageName testIds pannelIds testSample pannelSample')
+                        .populate('testIds pannelIds');
+
+                    if (!doc) return { names: [], objects: [] };
+
+                    const packageTestNames = [];
+                    const packageTestObjects = [];
+                    const packagePanelNames = [];
+                    const packagePanelObjects = [];
+
+                    // Resolve tests in package
+                    (doc.testIds || []).forEach((test, tIdx) => {
+                        if (!test) return;
+                        const testSamples = [
+                            ...(test.sampleType ? [test.sampleType] : []),
+                            ...(test.sample_type ? [test.sample_type] : []),
+                            ...(Array.isArray(test.sampleTypes) ? test.sampleTypes : []),
+                            ...(Array.isArray(doc.testSample) && doc.testSample[tIdx] ? [doc.testSample[tIdx]] : [])
+                        ];
+
+                        if (matchesBookingSampleType(testSamples, targetSample, isSingleSampleBooking)) {
+                            const name = test.Name || test.Short_name || '';
+                            if (name) packageTestNames.push(name);
+                            packageTestObjects.push({ id: test._id, collectionName: "testSchema" });
+                        }
+                    });
+
+                    // Resolve panels in package (CRITICAL: panel has sample_types array)
+                    (doc.pannelIds || []).forEach((panel, pIdx) => {
+                        if (!panel) return;
+                        const panelSamples = [
+                            ...(Array.isArray(panel.sample_types) ? panel.sample_types : []),
+                            ...(Array.isArray(panel.sampleTypes) ? panel.sampleTypes : []),
+                            ...(panel.sampleType ? [panel.sampleType] : []),
+                            ...(Array.isArray(doc.pannelSample) && doc.pannelSample[pIdx] ? [doc.pannelSample[pIdx]] : [])
+                        ];
+
+                        if (matchesBookingSampleType(panelSamples, targetSample, isSingleSampleBooking)) {
+                            const name = panel.name || panel.Short_name || '';
+                            if (name) packagePanelNames.push(name);
+                            packagePanelObjects.push({ id: panel._id, collectionName: "addPannel" });
+                        }
+                    });
+
+                    // Safety fallback: if no tests or panels matched this specific sample type row,
+                    // do NOT drop package contents! Include all items from the package.
+                    if (packageTestObjects.length === 0 && packagePanelObjects.length === 0) {
+                        (doc.testIds || []).forEach(test => {
+                            if (!test) return;
+                            const name = test.Name || test.Short_name || '';
+                            if (name) packageTestNames.push(name);
+                            packageTestObjects.push({ id: test._id, collectionName: "testSchema" });
+                        });
+                        (doc.pannelIds || []).forEach(panel => {
+                            if (!panel) return;
+                            const name = panel.name || panel.Short_name || '';
+                            if (name) packagePanelNames.push(name);
+                            packagePanelObjects.push({ id: panel._id, collectionName: "addPannel" });
+                        });
+                    }
+
+                    return {
+                        names: [...packageTestNames, ...packagePanelNames],
+                        objects: [...packageTestObjects, ...packagePanelObjects]
+                    };
+                }
+
+                return { names: [], objects: [] };
+            })
+        );
+
+        const testnames = [...new Set(testResults.flatMap((result) => result.names).filter(Boolean))];
+        const seenKeys = new Set();
+        const testObjects = [];
+        testResults.flatMap((result) => result.objects).forEach(obj => {
+            if (!obj || !obj.id) return;
+            const key = `${String(obj.id)}_${obj.collectionName}`;
+            if (!seenKeys.has(key)) {
+                seenKeys.add(key);
+                testObjects.push(obj);
+            }
+        });
+
+        const normalizedBarcode = element.confirmBarcodeId || element.barcodeId;
+
+        const existingBarcode = await acceptedBarcode.findOne({
+            tenantId,
+            bookingId: { $ne: bookingId },
+            "barcodes.barcode": normalizedBarcode,
+        });
+
+        if (existingBarcode) {
+            throw new ApiError(400, `Barcode ${normalizedBarcode} is already accepted in another booking`);
+        }
+
+        acceptedBarcodeRows.push({
+            barcodeId: normalizedBarcode,
+            typeOfSample: element.typeOfSample,
+            testName: testnames.join(", "),
+            ids: testObjects
+        });
+    }
+
+    return acceptedBarcodeRows;
 };
 
 const findbookingId = async (req, res) => {
@@ -192,18 +633,9 @@ const NewBookingcontroller = asyncHandler(async (req, res) => {
         }
 
         // Clean up optional IDs
-        const cleanSubFranchiseeId = (!subFranchiseeId ||
-            subFranchiseeId.trim() === '' ||
-            subFranchiseeId === "null" ||
-            subFranchiseeId === "undefined") ? undefined : subFranchiseeId;
-
-        const cleanSavedDoctorId = (!savedDoctorId ||
-            savedDoctorId === "null" ||
-            savedDoctorId === "undefined") ? undefined : savedDoctorId;
-
-        const cleanSavedLabId = (!savedLabId ||
-            savedLabId === "null" ||
-            savedLabId === "undefined") ? undefined : savedLabId;
+        const cleanSubFranchiseeId = normalizeOptionalObjectIdInput(subFranchiseeId, "subFranchiseeId") || undefined;
+        const cleanSavedDoctorId = normalizeOptionalObjectIdInput(savedDoctorId, "savedDoctorId") || undefined;
+        const cleanSavedLabId = normalizeOptionalObjectIdInput(savedLabId, "savedLabId") || undefined;
 
         const issinglelayeradmin = tenantId.modelType === "1layer" &&
             (req.user.role === "admin" || (req.user.role === "staff" && req.user.parentRole === "admin"));
@@ -584,17 +1016,33 @@ const NewBookingcontroller = asyncHandler(async (req, res) => {
                             const addedTestIds = new Set();
                             const addedPanelIds = new Set();
 
-                            doc.testIds.forEach(test => {
-                                if (test.sampleType === element.typeOfSample && !addedTestIds.has(test._id.toString())) {
-                                    packagetestNames.push(test.Name);
+                            (doc.testIds || []).forEach((test, tIdx) => {
+                                if (!test) return;
+                                const testSamples = [
+                                    ...(test.sampleType ? [test.sampleType] : []),
+                                    ...(test.sample_type ? [test.sample_type] : []),
+                                    ...(Array.isArray(test.sampleTypes) ? test.sampleTypes : []),
+                                    ...(Array.isArray(doc.testSample) && doc.testSample[tIdx] ? [doc.testSample[tIdx]] : [])
+                                ];
+                                if (matchesBookingSampleType(testSamples, element.typeOfSample, parsedTableData.length <= 1) && !addedTestIds.has(test._id.toString())) {
+                                    const name = test.Name || test.Short_name || '';
+                                    if (name) packagetestNames.push(name);
                                     packagetestObjects.push({ id: test._id, collectionName: "testSchema" });
                                     addedTestIds.add(test._id.toString());
                                 }
                             });
 
-                            doc.pannelIds.forEach(panel => {
-                                if (panel.sample_types[0] === element.typeOfSample && !addedPanelIds.has(panel._id.toString())) {
-                                    packagepanelNames.push(panel.name);
+                            (doc.pannelIds || []).forEach((panel, pIdx) => {
+                                if (!panel) return;
+                                const panelSamples = [
+                                    ...(Array.isArray(panel.sample_types) ? panel.sample_types : []),
+                                    ...(Array.isArray(panel.sampleTypes) ? panel.sampleTypes : []),
+                                    ...(panel.sampleType ? [panel.sampleType] : []),
+                                    ...(Array.isArray(doc.pannelSample) && doc.pannelSample[pIdx] ? [doc.pannelSample[pIdx]] : [])
+                                ];
+                                if (matchesBookingSampleType(panelSamples, element.typeOfSample, parsedTableData.length <= 1) && !addedPanelIds.has(panel._id.toString())) {
+                                    const name = panel.name || panel.Short_name || '';
+                                    if (name) packagepanelNames.push(name);
                                     packagepanelObjects.push({ id: panel._id, collectionName: "addPannel" });
                                     addedPanelIds.add(panel._id.toString());
                                 }
@@ -1022,7 +1470,7 @@ const SearchBookingController = asyncHandler(async (req, res) => {
         const booking = await newBooking.findOne(searchQuery)
             .populate('createdBy', 'fullName username')
             .populate('subFranchiseeId', 'name')
-            .populate('savedDoctorId', 'displayName firstName lastName')
+            .populate('savedDoctorId', 'displayName firstName lastName email')
             .populate('savedLabId', 'name');
 
         if (!booking) {
@@ -1032,41 +1480,57 @@ const SearchBookingController = asyncHandler(async (req, res) => {
             });
         }
 
-        // Get test names for table data
-        const enhancedTableData = await Promise.all(
-            booking.tableData.map(async (entry) => {
-                let testNames = [];
+        // Collect all test/panel/package IDs for batch lookup (eliminates N+1 query overhead)
+        const testIds = [];
+        const panelIds = [];
+        const packageIds = [];
 
-                if (entry.ids && entry.ids.length > 0) {
-                    for (const idObj of entry.ids) {
-                        try {
-                            let testDoc = null;
+        (booking.tableData || []).forEach(entry => {
+            if (entry.ids && entry.ids.length > 0) {
+                entry.ids.forEach(idObj => {
+                    if (idObj.collectionName === "testSchema") testIds.push(idObj.id);
+                    else if (idObj.collectionName === "addPannel") panelIds.push(idObj.id);
+                    else if (idObj.collectionName === "Package") packageIds.push(idObj.id);
+                });
+            }
+        });
 
-                            if (idObj.collectionName === "testSchema") {
-                                testDoc = await testSchema.findById(idObj.id).select('Name');
-                                if (testDoc) testNames.push(testDoc.Name);
-                            } else if (idObj.collectionName === "addPannel") {
-                                testDoc = await addPannel.findById(idObj.id).select('name');
-                                if (testDoc) testNames.push(testDoc.name);
-                            } else if (idObj.collectionName === "Package") {
-                                testDoc = await Package.findById(idObj.id).select('packageName');
-                                if (testDoc) testNames.push(testDoc.packageName);
-                            }
-                        } catch (error) {
-                            console.log(`Error fetching test ${idObj.id}:`, error);
-                        }
+        const [testDocs, panelDocs, packageDocs] = await Promise.all([
+            testIds.length ? testSchema.find({ _id: { $in: testIds } }).select("Name").lean() : [],
+            panelIds.length ? addPannel.find({ _id: { $in: panelIds } }).select("name").lean() : [],
+            packageIds.length ? Package.find({ _id: { $in: packageIds } }).select("packageName").lean() : []
+        ]);
+
+        const testMap = new Map(testDocs.map(doc => [String(doc._id), doc.Name]));
+        const panelMap = new Map(panelDocs.map(doc => [String(doc._id), doc.name]));
+        const packageMap = new Map(packageDocs.map(doc => [String(doc._id), doc.packageName]));
+
+        const enhancedTableData = (booking.tableData || []).map(entry => {
+            const testNames = [];
+            if (entry.ids && entry.ids.length > 0) {
+                entry.ids.forEach(idObj => {
+                    const idStr = String(idObj.id);
+                    if (idObj.collectionName === "testSchema" && testMap.has(idStr)) {
+                        testNames.push(testMap.get(idStr));
+                    } else if (idObj.collectionName === "addPannel" && panelMap.has(idStr)) {
+                        testNames.push(panelMap.get(idStr));
+                    } else if (idObj.collectionName === "Package" && packageMap.has(idStr)) {
+                        testNames.push(packageMap.get(idStr));
                     }
-                }
-
-                return {
-                    ...entry,
-                    testNames: testNames,
-                    barcodeId: entry.barcodeId || entry.confirmBarcodeId
-                };
-            })
-        );
+                });
+            }
+            return {
+                ...(entry.toObject ? entry.toObject() : entry),
+                testNames,
+                barcodeId: entry.barcodeId || entry.confirmBarcodeId
+            };
+        });
 
         // Prepare response data
+        const populatedSubFranchisee = booking.subFranchiseeId;
+        const populatedDoctor = booking.savedDoctorId;
+        const populatedLab = booking.savedLabId;
+
         const bookingData = {
             _id: booking._id,
             bookingId: booking.bookingId,
@@ -1079,7 +1543,8 @@ const SearchBookingController = asyncHandler(async (req, res) => {
             doctorName: booking.doctorName,
             labName: booking.labName,
             franchisee: booking.franchisee,
-            subFranchisee: booking.subFranchisee,
+            subFranchisee: booking.subFranchisee || populatedSubFranchisee?.name || '',
+            subFranchiseeId: populatedSubFranchisee?._id || booking.subFranchiseeId || null,
             courierName: booking.courierName,
             courierId: booking.courierId,
             clinicalHistory: booking.clinicalHistory,
@@ -1087,6 +1552,12 @@ const SearchBookingController = asyncHandler(async (req, res) => {
             status: booking.status || 'pending',
             tableData: enhancedTableData,
             selectedItems: booking.selectedItems || [],
+            savedDoctor: booking.savedDoctor || populatedDoctor?.displayName || '',
+            savedDoctorId: populatedDoctor?._id || booking.savedDoctorId || null,
+            savedDoctorEmail: booking.savedDoctorEmail || populatedDoctor?.email || '',
+            savedLab: booking.savedLab || populatedLab?.name || '',
+            savedLabId: populatedLab?._id || booking.savedLabId || null,
+            file: booking.file || '',
             createdBy: booking.createdBy,
             createdAt: booking.createdAt,
             updatedAt: booking.updatedAt,
@@ -1096,17 +1567,17 @@ const SearchBookingController = asyncHandler(async (req, res) => {
             discountunit: booking.discountunit || 0
         };
 
-        res.status(200).json({
+        return res.status(200).json({
             success: true,
-            message: 'Booking found successfully',
+            message: 'Booking retrieved successfully',
             data: bookingData
         });
 
     } catch (error) {
-        console.error("Search booking error:", error);
-        res.status(500).json({
+        console.error('Error searching booking:', error);
+        return res.status(500).json({
             success: false,
-            message: 'Internal server error',
+            message: 'Failed to search booking',
             error: error.message
         });
     }
@@ -1119,7 +1590,8 @@ const editbookingbookedtests = async (req, res) => {
             year, gender, patientPhone, doctorName, labName, franchisee,
             clinicalHistory, subFranchisee, savedDoctor,
             savedLab, subFranchiseeId, savedDoctorId, savedLabId, total, tableData, testIds,
-            selectedItems, createdbyuser, discountamount, discountunit, userId: incomingBookingUserId, savedDoctorEmail
+            selectedItems, createdbyuser, discountamount, discountunit, userId: incomingBookingUserId, savedDoctorEmail,
+            replaceExistingSelection
         } = req.body;
 
         const userId = getEffectiveBookingUserId(req);
@@ -1127,10 +1599,11 @@ const editbookingbookedtests = async (req, res) => {
         const tenantId = req.user.tenantId;
         let issinglelayeradmin = false;
         issinglelayeradmin = tenantId.modelType === "1layer" && req.user.role === "admin";
+        const shouldReplaceSelection = parseBooleanFlag(replaceExistingSelection);
 
-        const parsedSubFranchiseeId = subFranchiseeId === "null" ? null : subFranchiseeId;
-        const parsedSavedDoctorId = savedDoctorId === "null" ? null : savedDoctorId;
-        const parsedSavedLabId = savedLabId === "null" ? null : savedLabId;
+        const parsedSubFranchiseeId = normalizeOptionalObjectIdInput(subFranchiseeId, "subFranchiseeId");
+        const parsedSavedDoctorId = normalizeOptionalObjectIdInput(savedDoctorId, "savedDoctorId");
+        const parsedSavedLabId = normalizeOptionalObjectIdInput(savedLabId, "savedLabId");
         let tableData2 = tableData;
         if (typeof tableData === "string") {
             tableData2 = JSON.parse(tableData);
@@ -1138,7 +1611,7 @@ const editbookingbookedtests = async (req, res) => {
 
         if (!Array.isArray(tableData2)) {
             console.error("Error: tableData is not an array", tableData);
-            return res.status(500).json({ error: "Invalid data format" });
+            return res.status(400).json({ message: "Invalid booking sample data format" });
         }
 
         // Ensure all barcodeIds are present (non-empty)
@@ -1161,12 +1634,12 @@ const editbookingbookedtests = async (req, res) => {
             });
 
             if (isBarcodeIdPresent) {
-                return res.status(400).json(`${element.confirmBarcodeId} barcode already present`);
+                return res.status(400).json({ message: `${element.confirmBarcodeId} barcode already present` });
             }
         }
 
         if (!patientName) {
-            return res.status(400).json("Patient Name is required");
+            return res.status(400).json({ message: "Patient Name is required" });
         }
 
         // Get existing booking
@@ -1181,6 +1654,10 @@ const editbookingbookedtests = async (req, res) => {
         if (existingBooking.status === "cancelled") {
             return res.status(404).json({ message: 'Booking has been Cancelled' });
         }
+
+        const effectiveSubFranchiseeId = parsedSubFranchiseeId ?? existingBooking.subFranchiseeId ?? null;
+        const effectiveSavedDoctorId = parsedSavedDoctorId ?? existingBooking.savedDoctorId ?? null;
+        const effectiveSavedLabId = parsedSavedLabId ?? existingBooking.savedLabId ?? null;
 
         // Handle file upload
         let fileLink = null;
@@ -1202,24 +1679,40 @@ const editbookingbookedtests = async (req, res) => {
             throw new ApiError(400, "Invalid JSON format for booking data");
         }
 
+        parsedTableData = normalizeBookingTableRows(parsedTableData);
+        parsedSelectedTestIds = Array.isArray(parsedSelectedTestIds) ? parsedSelectedTestIds : [];
+        parsedSelectedItems = Array.isArray(parsedSelectedItems) ? parsedSelectedItems : [];
+
         const effectiveSelectionUserId = canManageAcrossTenant
             ? (incomingBookingUserId || existingBooking.createdBy || userId)
             : userId;
 
-        const selectionSnapshot = await buildValidatedSelectionSnapshot({
+        const selectionSnapshot = await buildEditSelectionSnapshot({
             req,
             bookingUserId: effectiveSelectionUserId,
-            doctorId: parsedSavedDoctorId,
+            doctorId: effectiveSavedDoctorId,
             selectedItems: parsedSelectedItems,
-            fallbackIds: parsedSelectedTestIds
+            fallbackIds: parsedSelectedTestIds,
+            existingBooking
         });
 
+        if (
+            !selectionSnapshot
+            || Array.isArray(selectionSnapshot)
+            || !Array.isArray(selectionSnapshot.selectedItems)
+            || selectionSnapshot.selectedItems.length === 0
+        ) {
+            return res.status(400).json({
+                message: "At least one test, panel or package must remain selected"
+            });
+        }
+
         const parsedTotal = selectionSnapshot.total;
-        const resolvedDoctorName = savedDoctor || getDoctorDisplayName(selectionSnapshot.doctor) || "";
-        const resolvedDoctorId = selectionSnapshot.doctor?._id || parsedSavedDoctorId;
-        const resolvedDoctorText = doctorName || resolvedDoctorName;
+        const resolvedDoctorName = savedDoctor || existingBooking.savedDoctor || getDoctorDisplayName(selectionSnapshot.doctor) || "";
+        const resolvedDoctorId = selectionSnapshot.doctor?._id || effectiveSavedDoctorId || null;
+        const resolvedDoctorText = doctorName || existingBooking.doctorName || resolvedDoctorName;
         const resolvedDoctorEmail = normalizeOptionalEmail(
-            savedDoctorEmail || selectionSnapshot.doctor?.email
+            savedDoctorEmail || existingBooking.savedDoctorEmail || selectionSnapshot.doctor?.email
         );
         const resolvedDoctorMeta = buildDoctorSnapshot(selectionSnapshot.doctor, {
             savedDoctor: resolvedDoctorName,
@@ -1228,178 +1721,207 @@ const editbookingbookedtests = async (req, res) => {
         });
 
         const sampleBarcodeId = parsedTableData.map(entry => entry.confirmBarcodeId).filter(id => id != null);
+        let nextTableData = [];
+        let nextSelectedItems = [];
+        let nextTotal = parsedTotal;
+        let acceptedBarcodeSyncMode = "merge";
 
-        // === STRICT CHECK: Duplicate Tests in SAME Barcode + TypeOfSample ===
-        const existingTableData = existingBooking.tableData || [];
-        const duplicateTests = [];
-        const duplicateBarcodes = [];
+        if (shouldReplaceSelection) {
+            const rowBarcodeTypes = new Map();
+            const barcodeConflicts = [];
 
-        // Check 1: Barcode uniqueness across entire database (excluding current booking)
-        for (const newEntry of parsedTableData) {
-            const barcodeInOtherBooking = await newBooking.findOne({
-                tenantId: tenantId._id,
-                bookingId: { $ne: barcodeId },
-                'tableData.barcodeId': newEntry.confirmBarcodeId || newEntry.barcodeId
-            });
+            parsedTableData.forEach((entry) => {
+                const normalizedBarcode = entry.confirmBarcodeId || entry.barcodeId;
+                const normalizedSampleType = String(entry.typeOfSample || "").trim() || "Unknown";
 
-            if (barcodeInOtherBooking) {
-                duplicateBarcodes.push(newEntry.confirmBarcodeId || newEntry.barcodeId);
-            }
-        }
-
-        if (duplicateBarcodes.length > 0) {
-            return res.status(400).json({
-                message: 'Barcode already exists in another booking',
-                duplicateBarcodes: [...new Set(duplicateBarcodes)]
-            });
-        }
-
-        // Check 2: Within current booking - same barcode can't have different typeOfSample
-        parsedTableData.forEach(newEntry => {
-            const newBarcodeId = newEntry.confirmBarcodeId || newEntry.barcodeId;
-            const newTypeOfSample = newEntry.typeOfSample;
-
-            existingTableData.forEach(existing => {
-                // If same barcode but different typeOfSample
-                if (existing.barcodeId === newBarcodeId && existing.typeOfSample !== newTypeOfSample) {
-                    duplicateBarcodes.push(`${newBarcodeId} (Type conflict: ${existing.typeOfSample} vs ${newTypeOfSample})`);
+                const savedSampleType = rowBarcodeTypes.get(normalizedBarcode);
+                if (savedSampleType && savedSampleType !== normalizedSampleType) {
+                    barcodeConflicts.push(`${normalizedBarcode} (${savedSampleType} vs ${normalizedSampleType})`);
+                } else {
+                    rowBarcodeTypes.set(normalizedBarcode, normalizedSampleType);
                 }
             });
-        });
 
-        if (duplicateBarcodes.length > 0) {
-            return res.status(400).json({
-                message: 'Same barcode cannot have different sample types',
-                conflicts: [...new Set(duplicateBarcodes)]
+            if (barcodeConflicts.length > 0) {
+                return res.status(400).json({
+                    message: 'Same barcode cannot have different sample types',
+                    conflicts: [...new Set(barcodeConflicts)]
+                });
+            }
+
+            nextTableData = parsedTableData.map((entry) => ({
+                typeOfSample: entry.typeOfSample,
+                barcodeId: entry.confirmBarcodeId || entry.barcodeId,
+                testName: entry.testName || '',
+                ids: entry.ids || []
+            }));
+            nextSelectedItems = selectionSnapshot.selectedItems;
+            nextTotal = parsedTotal;
+            acceptedBarcodeSyncMode = "replace";
+        } else {
+            // === STRICT CHECK: Duplicate Tests in SAME Barcode + TypeOfSample ===
+            const existingTableData = existingBooking.tableData || [];
+            const duplicateTests = [];
+            const duplicateBarcodes = [];
+
+            // Check 1: Barcode uniqueness across entire database (excluding current booking)
+            for (const newEntry of parsedTableData) {
+                const barcodeInOtherBooking = await newBooking.findOne({
+                    tenantId: tenantId._id,
+                    bookingId: { $ne: barcodeId },
+                    'tableData.barcodeId': newEntry.confirmBarcodeId || newEntry.barcodeId
+                });
+
+                if (barcodeInOtherBooking) {
+                    duplicateBarcodes.push(newEntry.confirmBarcodeId || newEntry.barcodeId);
+                }
+            }
+
+            if (duplicateBarcodes.length > 0) {
+                return res.status(400).json({
+                    message: 'Barcode already exists in another booking',
+                    duplicateBarcodes: [...new Set(duplicateBarcodes)]
+                });
+            }
+
+            // Check 2: Within current booking - same barcode can't have different typeOfSample
+            parsedTableData.forEach(newEntry => {
+                const newBarcodeId = newEntry.confirmBarcodeId || newEntry.barcodeId;
+                const newTypeOfSample = newEntry.typeOfSample;
+
+                existingTableData.forEach(existing => {
+                    if (existing.barcodeId === newBarcodeId && existing.typeOfSample !== newTypeOfSample) {
+                        duplicateBarcodes.push(`${newBarcodeId} (Type conflict: ${existing.typeOfSample} vs ${newTypeOfSample})`);
+                    }
+                });
             });
-        }
 
-        // Check 3: Duplicate tests in SAME barcode + SAME typeOfSample
-        parsedTableData.forEach(newEntry => {
-            const newBarcodeId = newEntry.confirmBarcodeId || newEntry.barcodeId;
-            const newTypeOfSample = newEntry.typeOfSample;
+            if (duplicateBarcodes.length > 0) {
+                return res.status(400).json({
+                    message: 'Same barcode cannot have different sample types',
+                    conflicts: [...new Set(duplicateBarcodes)]
+                });
+            }
 
-            // Find exact match: same barcode AND same typeOfSample
-            const matchingExisting = existingTableData.find(
-                existing =>
-                    existing.barcodeId === newBarcodeId &&
-                    existing.typeOfSample === newTypeOfSample
-            );
+            // Check 3: Duplicate tests in SAME barcode + SAME typeOfSample
+            parsedTableData.forEach(newEntry => {
+                const newBarcodeId = newEntry.confirmBarcodeId || newEntry.barcodeId;
+                const newTypeOfSample = newEntry.typeOfSample;
 
-            if (matchingExisting) {
-                // Check for duplicate test names
-                if (matchingExisting.testName && newEntry.testName) {
-                    const existingTestNames = matchingExisting.testName.split(',').map(t => t.trim().toLowerCase());
-                    const newTestNames = newEntry.testName.split(',').map(t => t.trim().toLowerCase());
+                const matchingExisting = existingTableData.find(
+                    existing =>
+                        existing.barcodeId === newBarcodeId &&
+                        existing.typeOfSample === newTypeOfSample
+                );
 
-                    newTestNames.forEach(testName => {
-                        if (existingTestNames.includes(testName)) {
-                            duplicateTests.push(testName);
+                if (matchingExisting) {
+                    if (matchingExisting.testName && newEntry.testName) {
+                        const existingTestNames = matchingExisting.testName.split(',').map(t => t.trim().toLowerCase());
+                        const newTestNames = newEntry.testName.split(',').map(t => t.trim().toLowerCase());
+
+                        newTestNames.forEach(testName => {
+                            if (existingTestNames.includes(testName)) {
+                                duplicateTests.push(testName);
+                            }
+                        });
+                    }
+
+                    const existingIds = matchingExisting.ids || [];
+                    const newIds = newEntry.ids || [];
+
+                    newIds.forEach(newId => {
+                        const isDuplicate = existingIds.some(
+                            existingId =>
+                                existingId.id.toString() === newId.id.toString() &&
+                                existingId.collectionName === newId.collectionName
+                        );
+                        if (isDuplicate) {
+                            duplicateTests.push(`${newId.collectionName}-${newId.id}`);
                         }
                     });
                 }
+            });
 
-                // Check for duplicate IDs (id + collectionName)
-                const existingIds = matchingExisting.ids || [];
-                const newIds = newEntry.ids || [];
-
-                newIds.forEach(newId => {
-                    const isDuplicate = existingIds.some(
-                        existingId =>
-                            existingId.id.toString() === newId.id.toString() &&
-                            existingId.collectionName === newId.collectionName
-                    );
-                    if (isDuplicate) {
-                        duplicateTests.push(`${newId.collectionName}-${newId.id}`);
-                    }
+            if (duplicateTests.length > 0) {
+                return res.status(400).json({
+                    message: 'Tests already exist in this booking',
+                    duplicateTests: [...new Set(duplicateTests)]
                 });
             }
-        });
 
-        if (duplicateTests.length > 0) {
-            return res.status(400).json({
-                message: 'Tests already exist in this booking',
-                duplicateTests: [...new Set(duplicateTests)]
+            const mergedTableData = [...existingTableData];
+
+            parsedTableData.forEach(newEntry => {
+                const newBarcodeId = newEntry.confirmBarcodeId || newEntry.barcodeId;
+                const newTypeOfSample = newEntry.typeOfSample;
+
+                const matchingIndex = mergedTableData.findIndex(
+                    existing =>
+                        existing.barcodeId === newBarcodeId &&
+                        existing.typeOfSample === newTypeOfSample
+                );
+
+                if (matchingIndex !== -1) {
+                    const existing = mergedTableData[matchingIndex];
+                    const existingTestNames = existing.testName ? existing.testName.split(',').map(t => t.trim()) : [];
+                    const newTestNames = newEntry.testName ? newEntry.testName.split(',').map(t => t.trim()) : [];
+                    const mergedTestNames = [...new Set([...existingTestNames, ...newTestNames])];
+
+                    const existingIds = existing.ids || [];
+                    const newIds = newEntry.ids || [];
+                    const mergedIds = [...existingIds];
+
+                    newIds.forEach(newId => {
+                        const isDuplicate = existingIds.some(
+                            existingId =>
+                                existingId.id.toString() === newId.id.toString() &&
+                                existingId.collectionName === newId.collectionName
+                        );
+                        if (!isDuplicate) {
+                            mergedIds.push(newId);
+                        }
+                    });
+
+                    mergedTableData[matchingIndex] = {
+                        typeOfSample: newTypeOfSample,
+                        barcodeId: newBarcodeId,
+                        testName: mergedTestNames.join(', '),
+                        ids: mergedIds
+                    };
+                } else {
+                    mergedTableData.push({
+                        typeOfSample: newTypeOfSample,
+                        barcodeId: newBarcodeId,
+                        testName: newEntry.testName || '',
+                        ids: newEntry.ids || []
+                    });
+                }
             });
+
+            const existingSelectedItems = Array.isArray(existingBooking.selectedItems)
+                ? existingBooking.selectedItems
+                : [];
+            const mergedSelectedItemsMap = new Map(
+                existingSelectedItems.map((item) => [
+                    `${item.itemType}:${item.itemId.toString()}`,
+                    item
+                ])
+            );
+
+            selectionSnapshot.selectedItems.forEach((item) => {
+                mergedSelectedItemsMap.set(
+                    `${item.itemType}:${item.itemId.toString()}`,
+                    item
+                );
+            });
+
+            nextTableData = mergedTableData;
+            nextSelectedItems = Array.from(mergedSelectedItemsMap.values());
+            nextTotal = existingBooking.total + parsedTotal;
         }
 
-        // === MERGE LOGIC: Safe to proceed ===
-        const mergedTableData = [...existingTableData];
-
-        parsedTableData.forEach(newEntry => {
-            const newBarcodeId = newEntry.confirmBarcodeId || newEntry.barcodeId;
-            const newTypeOfSample = newEntry.typeOfSample;
-
-            const matchingIndex = mergedTableData.findIndex(
-                existing =>
-                    existing.barcodeId === newBarcodeId &&
-                    existing.typeOfSample === newTypeOfSample
-            );
-
-            if (matchingIndex !== -1) {
-                // MERGE: Same barcode + Same typeOfSample found
-                const existing = mergedTableData[matchingIndex];
-
-                // Merge testNames (remove duplicates)
-                const existingTestNames = existing.testName ? existing.testName.split(',').map(t => t.trim()) : [];
-                const newTestNames = newEntry.testName ? newEntry.testName.split(',').map(t => t.trim()) : [];
-                const mergedTestNames = [...new Set([...existingTestNames, ...newTestNames])];
-
-                // Merge ids (remove duplicates)
-                const existingIds = existing.ids || [];
-                const newIds = newEntry.ids || [];
-                const mergedIds = [...existingIds];
-
-                newIds.forEach(newId => {
-                    const isDuplicate = existingIds.some(
-                        existingId =>
-                            existingId.id.toString() === newId.id.toString() &&
-                            existingId.collectionName === newId.collectionName
-                    );
-                    if (!isDuplicate) {
-                        mergedIds.push(newId);
-                    }
-                });
-
-                // Update existing entry
-                mergedTableData[matchingIndex] = {
-                    typeOfSample: newTypeOfSample,
-                    barcodeId: newBarcodeId,
-                    testName: mergedTestNames.join(', '),
-                    ids: mergedIds
-                };
-            } else {
-                // ADD NEW: Different barcode OR different typeOfSample
-                mergedTableData.push({
-                    typeOfSample: newTypeOfSample,
-                    barcodeId: newBarcodeId,
-                    testName: newEntry.testName || '',
-                    ids: newEntry.ids || []
-                });
-            }
-        });
-
-        const existingSelectedItems = Array.isArray(existingBooking.selectedItems)
-            ? existingBooking.selectedItems
-            : [];
-        const mergedSelectedItemsMap = new Map(
-            existingSelectedItems.map((item) => [
-                `${item.itemType}:${item.itemId.toString()}`,
-                item
-            ])
-        );
-
-        selectionSnapshot.selectedItems.forEach((item) => {
-            mergedSelectedItemsMap.set(
-                `${item.itemType}:${item.itemId.toString()}`,
-                item
-            );
-        });
-
-        const mergedSelectedItems = Array.from(mergedSelectedItemsMap.values());
-
         // === Wallet and Ledger Logic (Non-Admin) ===
-        if (!canManageAcrossTenant) {
+        if (!canManageAcrossTenant && !shouldReplaceSelection) {
             const bookingUser = await User.findById(userId);
             if (!bookingUser) {
                 throw new ApiError(404, "Booking user not found");
@@ -1513,21 +2035,21 @@ const editbookingbookedtests = async (req, res) => {
             gender,
             patientPhone,
             doctorName: resolvedDoctorText,
-            labName,
-            franchisee,
+            labName: labName || existingBooking.labName || "",
+            franchisee: franchisee || existingBooking.franchisee || "",
             clinicalHistory,
             file: fileLink?.url || existingBooking.file,
-            tableData: mergedTableData, // Use merged data
-            selectedItems: mergedSelectedItems,
-            total: existingBooking.total + parsedTotal, // Add to existing total
-            subFranchisee: subFranchisee || "",
-            subFranchiseeId: parsedSubFranchiseeId,
+            tableData: nextTableData,
+            selectedItems: nextSelectedItems,
+            total: nextTotal,
+            subFranchisee: subFranchisee || existingBooking.subFranchisee || "",
+            subFranchiseeId: effectiveSubFranchiseeId,
             savedDoctor: resolvedDoctorName,
             savedDoctorId: resolvedDoctorId,
             savedDoctorEmail: resolvedDoctorEmail,
             savedDoctorMeta: resolvedDoctorMeta,
-            savedLab: savedLab || "",
-            savedLabId: parsedSavedLabId,
+            savedLab: savedLab || existingBooking.savedLab || "",
+            savedLabId: effectiveSavedLabId,
             discountamount: issinglelayeradmin ? Number(discountamount) : existingBooking.discountamount,
             discountunit: issinglelayeradmin ? Number(discountunit) : existingBooking.discountunit,
             createdbyuser: createdbyuser,
@@ -1538,91 +2060,26 @@ const editbookingbookedtests = async (req, res) => {
         const updatedDoc = await newBooking.findOneAndUpdate(
             buildBookingAccessQuery(req, barcodeId),
             { $set: updateObject },
-            { returnDocument: 'after' }
+            { returnDocument: "after" }
         );
 
         if (!updatedDoc) {
             throw new ApiError(404, "Failed to update booking");
         }
 
-        // Keep accepted barcode data in sync for admin-side edits.
-        if (canManageAcrossTenant) {
-            const acceptedBarcodeRows = [];
-            for (const element of parsedTableData) {
-                const testResults = await Promise.all(
-                    element.ids.map(async obj => {
-                        if (obj.collectionName === "testSchema") {
-                            const doc = await testSchema.findById(obj.id).select('Name');
-                            return doc ? { names: [doc.Name], objects: [obj] } : { names: [], objects: [] };
-                        }
-                        if (obj.collectionName === "addPannel") {
-                            const doc = await addPannel.findById(obj.id).select('name');
-                            return doc ? { names: [doc.name], objects: [obj] } : { names: [], objects: [] };
-                        }
-                        if (obj.collectionName === "Package") {
-                            const doc = await Package.findById(obj.id)
-                                .select('testIds pannelIds')
-                                .populate('testIds pannelIds');
+        // Keep accepted barcode data in sync for all booking edits
+        const acceptedBarcodeRows = await buildAcceptedBarcodeRowsForSync({
+            tenantId: tenantId._id,
+            bookingId: barcodeId,
+            tableData: shouldReplaceSelection ? nextTableData : parsedTableData
+        });
 
-                            if (!doc) return { names: [], objects: [] };
-
-                            const packageTestNames = [];
-                            const packageTestObjects = [];
-                            const packagePanelNames = [];
-                            const packagePanelObjects = [];
-
-                            doc.testIds.forEach(test => {
-                                if (test.sampleType === element.typeOfSample) {
-                                    packageTestNames.push(test.Name);
-                                    packageTestObjects.push({ id: test._id, collectionName: "testSchema" });
-                                }
-                            });
-
-                            doc.pannelIds.forEach(panel => {
-                                if (panel.sampleType === element.typeOfSample) {
-                                    packagePanelNames.push(panel.name);
-                                    packagePanelObjects.push({ id: panel._id, collectionName: "addPannel" });
-                                }
-                            });
-
-                            return {
-                                names: [...packageTestNames, ...packagePanelNames],
-                                objects: [...packageTestObjects, ...packagePanelObjects]
-                            };
-                        }
-                        return { names: [], objects: [] };
-                    })
-                );
-
-                const testnames = testResults.flatMap(r => r.names);
-                const testObjects = testResults.flatMap(r => r.objects);
-                const normalizedBarcode = element.confirmBarcodeId || element.barcodeId;
-
-                const existingBarcode = await acceptedBarcode.findOne({
-                    tenantId: tenantId._id,
-                    bookingId: { $ne: barcodeId },
-                    "barcodes.barcode": normalizedBarcode,
-                });
-
-                if (existingBarcode) {
-                    return res.status(400).json({ message: "This barcode is already accepted." });
-                }
-
-                acceptedBarcodeRows.push({
-                    barcodeId: normalizedBarcode,
-                    typeOfSample: element.typeOfSample,
-                    testName: testnames.join(", "),
-                    ids: testObjects
-                });
-            }
-
-            await syncAcceptedBarcodesForBooking({
-                tenantId: tenantId._id,
-                bookingId: barcodeId,
-                tableData: acceptedBarcodeRows,
-                mode: "merge"
-            });
-        }
+        await syncAcceptedBarcodesForBooking({
+            tenantId: tenantId._id,
+            bookingId: barcodeId,
+            tableData: acceptedBarcodeRows,
+            mode: acceptedBarcodeSyncMode
+        });
 
         if (req.user.role === 'staff') {
             await User.findByIdAndUpdate(req.user._id, {
@@ -1647,7 +2104,11 @@ const editbookingbookedtests = async (req, res) => {
             });
         }
 
-        return res.status(200).json(new ApiResponse(200, updatedDoc, "Test edited successfully and commissions distributed"));
+        return res.status(200).json(new ApiResponse(
+            200,
+            updatedDoc,
+            shouldReplaceSelection ? "Booking updated successfully" : "Test edited successfully and commissions distributed"
+        ));
 
     } catch (err) {
         console.error("Error in editbookingbookedtests:", err);
@@ -1780,10 +2241,12 @@ const getAllBookingsController = asyncHandler(async (req, res) => {
         endDate
     } = req.body;
 
-    const skip = (page - 1) * limit;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.max(1, parseInt(limit, 10) || 50);
+    const skip = (pageNum - 1) * limitNum;
 
     let query = {
-        tenantId: req.user.tenantId._id,
+        tenantId: new mongoose.Types.ObjectId(req.user.tenantId._id),
         status: { $nin: ["cancelled", "canceled"] }
     };
     const andConditions = [];
@@ -1844,7 +2307,7 @@ const getAllBookingsController = asyncHandler(async (req, res) => {
         }
     }
 
-    // Handle barcode filter
+    // Handle barcode filter efficiently
     if (barcode) {
         const barcodeDocs = await acceptedBarcode.find(
             { "barcodes.barcode": { $regex: barcode, $options: 'i' } },
@@ -1858,8 +2321,8 @@ const getAllBookingsController = asyncHandler(async (req, res) => {
             return res.status(200).json({
                 bookings: [],
                 total: 0,
-                page: parseInt(page),
-                limit: parseInt(limit),
+                page: pageNum,
+                limit: limitNum,
             });
         }
     }
@@ -1868,231 +2331,588 @@ const getAllBookingsController = asyncHandler(async (req, res) => {
         query.$and = andConditions;
     }
 
-    // Fetch bookings with pagination
-    const bookings = await newBooking
-        .find(query)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(parseInt(limit))
-        .lean();
-
-    const total = await newBooking.countDocuments(query);
-
-    // Process barcodes and LIS data for current page bookings
-    if (bookings.length > 0) {
-        const bookingIds = bookings.map(b => b.bookingId);
-
-        // Fetch barcodes for current page
-        const barcodeData = await acceptedBarcode.find(
-            { bookingId: { $in: bookingIds } },
-            { bookingId: 1, barcodes: 1 }
-        ).lean();
-
-        // Create barcode map
-        const barcodeMap = new Map();
-        const allBarcodeIds = []; // Collect all barcode IDs for LIS check
-
-        barcodeData.forEach(doc => {
-            const barcodes = doc.barcodes.map(b => b.barcode);
-            barcodeMap.set(doc.bookingId, barcodes);
-            allBarcodeIds.push(...barcodes);
-        });
-
-        // Check LIS data availability for all barcodes in one query
-        let lisAvailabilityMap = new Map();
-
-        if (allBarcodeIds.length > 0) {
-            const lisDataDocs = await lisdata.find(
-                { "lisData.sample_id": { $in: allBarcodeIds } },
-                { "lisData.sample_id": 1 }
-            ).lean();
-
-            // Create a set of barcodes that have LIS data for O(1) lookup
-            const barcodesWithLis = new Set(
-                lisDataDocs.map(doc => doc.lisData?.sample_id).filter(Boolean)
-            );
-
-            // Map each barcode to its LIS availability
-            allBarcodeIds.forEach(barcodeId => {
-                lisAvailabilityMap.set(barcodeId, barcodesWithLis.has(barcodeId));
-            });
+    // Single-pass high performance MongoDB Aggregation Pipeline with $facet
+    const aggregationResults = await newBooking.aggregate([
+        { $match: query },
+        { $sort: { createdAt: -1 } },
+        {
+            $facet: {
+                metadata: [{ $count: "total" }],
+                bookings: [
+                    { $skip: skip },
+                    { $limit: limitNum },
+                    {
+                        $lookup: {
+                            from: "acceptedbarcodes",
+                            localField: "bookingId",
+                            foreignField: "bookingId",
+                            as: "barcodeDoc"
+                        }
+                    },
+                    {
+                        $addFields: {
+                            acceptedbarcodeObj: { $arrayElemAt: ["$barcodeDoc", 0] }
+                        }
+                    },
+                    {
+                        $addFields: {
+                            acceptedbarcode: {
+                                $ifNull: [
+                                    {
+                                        $map: {
+                                            input: { $ifNull: ["$acceptedbarcodeObj.barcodes", []] },
+                                            as: "b",
+                                            in: "$$b.barcode"
+                                        }
+                                    },
+                                    []
+                                ]
+                            }
+                        }
+                    },
+                    {
+                        $lookup: {
+                            from: "lisdatas",
+                            localField: "acceptedbarcode",
+                            foreignField: "lisData.sample_id",
+                            as: "lisDocs"
+                        }
+                    },
+                    {
+                        $addFields: {
+                            lisSampleSet: {
+                                $map: {
+                                    input: "$lisDocs",
+                                    as: "ld",
+                                    in: "$$ld.lisData.sample_id"
+                                }
+                            }
+                        }
+                    },
+                    {
+                        $addFields: {
+                            barcodeDetails: {
+                                $map: {
+                                    input: "$acceptedbarcode",
+                                    as: "code",
+                                    in: {
+                                        barcode: "$$code",
+                                        isLisPresent: { $in: ["$$code", "$lisSampleSet"] }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        $addFields: {
+                            isLisPresent: {
+                                $gt: [
+                                    {
+                                        $size: {
+                                            $filter: {
+                                                input: "$barcodeDetails",
+                                                as: "bd",
+                                                cond: { $eq: ["$$bd.isLisPresent", true] }
+                                            }
+                                        }
+                                    },
+                                    0
+                                ]
+                            },
+                            lisStats: {
+                                total: { $size: "$barcodeDetails" },
+                                withLis: {
+                                    $size: {
+                                        $filter: {
+                                            input: "$barcodeDetails",
+                                            as: "bd",
+                                            cond: { $eq: ["$$bd.isLisPresent", true] }
+                                        }
+                                    }
+                                },
+                                withoutLis: {
+                                    $size: {
+                                        $filter: {
+                                            input: "$barcodeDetails",
+                                            as: "bd",
+                                            cond: { $eq: ["$$bd.isLisPresent", false] }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        $project: {
+                            barcodeDoc: 0,
+                            acceptedbarcodeObj: 0,
+                            lisDocs: 0,
+                            lisSampleSet: 0
+                        }
+                    }
+                ]
+            }
         }
+    ]);
 
-        // Attach barcodes and LIS status to each booking
-        bookings.forEach(booking => {
-            const bookingBarcodes = barcodeMap.get(booking.bookingId) || [];
-
-            // Create detailed barcode status array
-            const barcodeDetails = bookingBarcodes.map(barcode => ({
-                barcode: barcode,
-                isLisPresent: lisAvailabilityMap.get(barcode) || false
-            }));
-
-            // Backward compatibility - keep old format
-            booking.acceptedbarcode = bookingBarcodes;
-
-            // New detailed format
-            booking.barcodeDetails = barcodeDetails;
-
-            // Overall LIS status - true if ANY barcode has LIS data
-            booking.isLisPresent = barcodeDetails.length > 0
-                ? barcodeDetails.some(detail => detail.isLisPresent === true)
-                : false;
-
-            // Additional stats
-            booking.lisStats = {
-                total: barcodeDetails.length,
-                withLis: barcodeDetails.filter(d => d.isLisPresent).length,
-                withoutLis: barcodeDetails.filter(d => !d.isLisPresent).length
-            };
-        });
-    }
+    const total = aggregationResults[0]?.metadata[0]?.total || 0;
+    const bookings = aggregationResults[0]?.bookings || [];
 
     return res.status(200).json({
         bookings,
         total,
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: pageNum,
+        limit: limitNum,
     });
 });
 
 const getDashboardDataController = asyncHandler(async (req, res) => {
-    const tenantId = req.user.tenantId._id;
-    const userRole = req.user.role;
-    const permissions = req.user.permissions || {};
+    // 1. Strict Tenant ID resolution - strictly prevent data leaks across tenants
+    const rawTenantId = req.user?.tenantId?._id || req.user?.tenantId;
+    if (!rawTenantId) {
+        throw new ApiError(401, "Tenant ID not found in session");
+    }
+    const tenantObjId = mongoose.Types.ObjectId.isValid(rawTenantId)
+        ? new mongoose.Types.ObjectId(rawTenantId)
+        : rawTenantId;
+    const tenantIdStr = String(rawTenantId);
+    const userRole = req.user?.role;
+    const permissions = req.user?.permissions || {};
 
-    // Parallel queries with conditional execution based on permissions
+    // 2. Parse date range parameters
+    const { range, days, startDate, endDate, timezone } = req.query;
+    const clientTimezone = timezone || "Asia/Kolkata";
+    const now = new Date();
+
+    let start = null;
+    let end = now;
+    const isTodayRequested = range === "today" || range === "1_day" || range === "one_day" || (days && Number(days) === 1);
+
+    if (startDate && endDate) {
+        const pStart = new Date(startDate);
+        const pEnd = new Date(endDate);
+        if (!isNaN(pStart.getTime()) && !isNaN(pEnd.getTime())) {
+            start = pStart;
+            end = pEnd;
+        }
+    } else if (days && Number(days) > 0) {
+        const numDays = Math.max(1, parseInt(days, 10));
+        if (numDays === 1 || isTodayRequested) {
+            // For 1 day / today: start of today in local date
+            start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+            end = now;
+        } else {
+            start = new Date(now.getTime() - numDays * 24 * 60 * 60 * 1000);
+            end = now;
+        }
+    } else if (range) {
+        switch (range) {
+            case "today":
+            case "1_day":
+            case "one_day": {
+                // Today: from start of today (00:00:00.000) up to current exact moment `now`
+                start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+                end = now;
+                break;
+            }
+            case "yesterday": {
+                start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 0, 0, 0, 0);
+                end = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 23, 59, 59, 999);
+                break;
+            }
+            case "2_days": {
+                start = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000);
+                end = now;
+                break;
+            }
+            case "3_days": {
+                start = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+                end = now;
+                break;
+            }
+            case "last_7_days":
+            case "7_days": {
+                start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+                end = now;
+                break;
+            }
+            case "15_days": {
+                start = new Date(now.getTime() - 15 * 24 * 60 * 60 * 1000);
+                end = now;
+                break;
+            }
+            case "1_month":
+            case "one_month": {
+                const d = new Date(now);
+                d.setMonth(d.getMonth() - 1);
+                start = d;
+                end = now;
+                break;
+            }
+            case "2_month":
+            case "two_month": {
+                const d = new Date(now);
+                d.setMonth(d.getMonth() - 2);
+                start = d;
+                end = now;
+                break;
+            }
+            case "3_month":
+            case "three_month": {
+                const d = new Date(now);
+                d.setMonth(d.getMonth() - 3);
+                start = d;
+                end = now;
+                break;
+            }
+            case "6_month":
+            case "six_month": {
+                const d = new Date(now);
+                d.setMonth(d.getMonth() - 6);
+                start = d;
+                end = now;
+                break;
+            }
+            case "1_year":
+            case "one_year": {
+                const d = new Date(now);
+                d.setFullYear(d.getFullYear() - 1);
+                start = d;
+                end = now;
+                break;
+            }
+            case "5_year":
+            case "five_year": {
+                const d = new Date(now);
+                d.setFullYear(d.getFullYear() - 5);
+                start = d;
+                end = now;
+                break;
+            }
+            case "all_time":
+            case "all": {
+                start = null;
+                end = now;
+                break;
+            }
+            default: {
+                // Default to last 30 days
+                const d = new Date(now);
+                d.setMonth(d.getMonth() - 1);
+                start = d;
+                end = now;
+                break;
+            }
+        }
+    } else {
+        // Default: last 30 days
+        const d = new Date(now);
+        d.setMonth(d.getMonth() - 1);
+        start = d;
+        end = now;
+    }
+
+    // 3. Build indexed $match filter - strictly bound to this tenantId
+    const bookingMatch = {
+        tenantId: { $in: [tenantObjId, tenantIdStr] }
+    };
+
+    // Tenant user scoping: non-admin users only see their own bookings
+    if (!canManageBookingsAcrossTenant(req)) {
+        const effectiveUserId = getEffectiveBookingUserId(req);
+        const userObjId = mongoose.Types.ObjectId.isValid(effectiveUserId)
+            ? new mongoose.Types.ObjectId(effectiveUserId)
+            : effectiveUserId;
+        bookingMatch.createdBy = { $in: [userObjId, String(effectiveUserId)] };
+    }
+
+    // Date range filter: support createdAt (canonical) and date (legacy fallback)
+    const dateConditions = [];
+    if (start && end) {
+        dateConditions.push(
+            { createdAt: { $gte: start, $lte: end } },
+            {
+                $and: [
+                    { $or: [{ createdAt: { $exists: false } }, { createdAt: null }] },
+                    { date: { $gte: start, $lte: end } }
+                ]
+            }
+        );
+    } else if (start) {
+        dateConditions.push(
+            { createdAt: { $gte: start } },
+            {
+                $and: [
+                    { $or: [{ createdAt: { $exists: false } }, { createdAt: null }] },
+                    { date: { $gte: start } }
+                ]
+            }
+        );
+    } else if (end) {
+        dateConditions.push(
+            { createdAt: { $lte: end } },
+            {
+                $and: [
+                    { $or: [{ createdAt: { $exists: false } }, { createdAt: null }] },
+                    { date: { $lte: end } }
+                ]
+            }
+        );
+    }
+
+    if (dateConditions.length > 0) {
+        bookingMatch.$or = dateConditions;
+    }
+
     const queries = [];
-    
-    // Query 1: Always fetch bookings (most users need this)
+
+    // Query 1: High performance DB Aggregation Pipeline for stats and charts strictly for this tenant
     queries.push(
-        newBooking.find({ tenantId })
-            .select('total status date tableData')
-            .sort({ createdAt: -1 })
-            .lean()
+        newBooking.aggregate([
+            { $match: bookingMatch },
+            {
+                $addFields: {
+                    bookingDate: { $ifNull: ["$createdAt", "$date"] }
+                }
+            },
+            {
+                $facet: {
+                    stats: [
+                        {
+                            $group: {
+                                _id: null,
+                                totalBookings: { $sum: 1 },
+                                totalRevenue: {
+                                    $sum: {
+                                        $cond: [
+                                            { $in: ["$status", ["cancelled", "Cancelled", "canceled", "Canceled", "rejected", "Rejected"]] },
+                                            0,
+                                            { $ifNull: ["$total", 0] }
+                                        ]
+                                    }
+                                },
+                                pendingTests: {
+                                    $sum: {
+                                        $cond: [
+                                            { $in: ["$status", ["pending", "On Hold", "on hold", "Pending", "created", "in progress", "In Progress"]] },
+                                            1,
+                                            0
+                                        ]
+                                    }
+                                },
+                                completedTests: {
+                                    $sum: {
+                                        $cond: [
+                                            { $in: ["$status", ["completed", "Completed", "Report Ready", "report ready", "ready", "Ready"]] },
+                                            1,
+                                            0
+                                        ]
+                                    }
+                                },
+                                cancelledBookings: {
+                                    $sum: {
+                                        $cond: [
+                                            { $in: ["$status", ["cancelled", "Cancelled", "canceled", "Canceled"]] },
+                                            1,
+                                            0
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    monthlyRevenue: [
+                        {
+                            $match: {
+                                bookingDate: { $exists: true, $ne: null },
+                                status: { $nin: ["cancelled", "Cancelled", "canceled", "Canceled"] }
+                            }
+                        },
+                        {
+                            $group: {
+                                _id: {
+                                    $dateToString: {
+                                        format: "%Y-%m",
+                                        date: "$bookingDate",
+                                        timezone: clientTimezone
+                                    }
+                                },
+                                revenue: { $sum: { $ifNull: ["$total", 0] } },
+                                count: { $sum: 1 }
+                            }
+                        },
+                        { $sort: { _id: 1 } }
+                    ],
+                    dailyRevenue: [
+                        {
+                            $match: {
+                                bookingDate: { $exists: true, $ne: null },
+                                status: { $nin: ["cancelled", "Cancelled", "canceled", "Canceled"] }
+                            }
+                        },
+                        {
+                            $group: {
+                                _id: {
+                                    $dateToString: {
+                                        format: "%Y-%m-%d",
+                                        date: "$bookingDate",
+                                        timezone: clientTimezone
+                                    }
+                                },
+                                revenue: { $sum: { $ifNull: ["$total", 0] } },
+                                count: { $sum: 1 }
+                            }
+                        },
+                        { $sort: { _id: 1 } },
+                        { $limit: 365 }
+                    ],
+                    hourlyRevenue: [
+                        {
+                            $match: {
+                                bookingDate: { $exists: true, $ne: null },
+                                status: { $nin: ["cancelled", "Cancelled", "canceled", "Canceled"] }
+                            }
+                        },
+                        {
+                            $group: {
+                                _id: {
+                                    $dateToString: {
+                                        format: "%H:00",
+                                        date: "$bookingDate",
+                                        timezone: clientTimezone
+                                    }
+                                },
+                                revenue: { $sum: { $ifNull: ["$total", 0] } },
+                                count: { $sum: 1 }
+                            }
+                        },
+                        { $sort: { _id: 1 } }
+                    ],
+                    topTests: [
+                        { $unwind: "$tableData" },
+                        { $match: { "tableData.testName": { $exists: true, $ne: "" } } },
+                        {
+                            $group: {
+                                _id: "$tableData.testName",
+                                count: { $sum: 1 }
+                            }
+                        },
+                        { $sort: { count: -1 } },
+                        { $limit: 8 }
+                    ],
+                    recentBookings: [
+                        { $sort: { bookingDate: -1 } },
+                        { $limit: 20 },
+                        {
+                            $project: {
+                                bookingId: 1,
+                                patientName: 1,
+                                patientPhone: 1,
+                                status: 1,
+                                total: 1,
+                                createdAt: "$bookingDate",
+                                createdbyuser: 1
+                            }
+                        }
+                    ]
+                }
+            }
+        ])
     );
 
-    // Query 2: Fetch franchisees only if user has permission
+    // Query 2: Fetch franchisees strictly for this tenant
     if (permissions.canManageUsers || userRole !== 'staff') {
         queries.push(
             User.find({
-                tenantId,
-                role: { $ne: 'staff' },
+                tenantId: { $in: [tenantObjId, tenantIdStr] },
+                role: { $in: ['franchisee', 'subFranchisee', 'superFranchisee'] },
                 isActive: true
             })
-            .select('fullName address phoneNo email isActive')
+            .select('fullName address phoneNo email isActive role city state')
             .lean()
         );
     } else {
         queries.push(Promise.resolve([]));
     }
 
-    // Execute all queries in parallel
-    const [bookings, franchisees] = await Promise.all(queries);
+    const [aggResult, franchisees] = await Promise.all(queries);
+    const facetData = aggResult[0] || {};
+    const statsData = facetData.stats?.[0] || {
+        totalBookings: 0,
+        totalRevenue: 0,
+        pendingTests: 0,
+        completedTests: 0,
+        cancelledBookings: 0
+    };
 
-    // Initialize response structure
+    const monthlyEntries = facetData.monthlyRevenue || [];
+    const dailyEntries = facetData.dailyRevenue || [];
+    const hourlyEntries = facetData.hourlyRevenue || [];
+    const topTestEntries = facetData.topTests || [];
+    const recentBookings = facetData.recentBookings || [];
+
+    const isTodayMode = isTodayRequested || range === 'today';
+
+    let dailyChartLabels = [];
+    let dailyChartData = [];
+    let dailyChartCounts = [];
+    let dailyMode = isTodayMode ? "hourly" : "daily";
+
+    if (isTodayMode) {
+        // Continuous hourly timeline from 00:00 up to current hour in client time
+        const currentHourNum = (end instanceof Date && !isNaN(end.getTime())) ? end.getHours() : now.getHours();
+        const hourlyMap = new Map(hourlyEntries.map(item => [item._id, item]));
+
+        for (let h = 0; h <= currentHourNum; h++) {
+            const slotLabel = `${String(h).padStart(2, '0')}:00`;
+            const entry = hourlyMap.get(slotLabel);
+            dailyChartLabels.push(slotLabel);
+            dailyChartData.push(entry ? Math.round(entry.revenue) : 0);
+            dailyChartCounts.push(entry ? entry.count : 0);
+        }
+    } else {
+        dailyChartLabels = dailyEntries.map(item => item._id);
+        dailyChartData = dailyEntries.map(item => Math.round(item.revenue));
+        dailyChartCounts = dailyEntries.map(item => item.count);
+    }
+
     const response = {
+        filter: {
+            range: range || (days ? "custom" : "1_month"),
+            days: days ? Number(days) : null,
+            startDate: start ? start.toISOString() : null,
+            endDate: end ? end.toISOString() : null,
+            isToday: isTodayMode,
+            timezone: clientTimezone
+        },
         stats: {
-            totalBookings: 0,
-            totalRevenue: 0,
-            pendingTests: 0,
-            activeFranchises: 0
+            totalBookings: statsData.totalBookings || 0,
+            totalRevenue: Math.round(statsData.totalRevenue || 0),
+            pendingTests: statsData.pendingTests || 0,
+            completedTests: statsData.completedTests || 0,
+            cancelledBookings: statsData.cancelledBookings || 0,
+            activeFranchises: franchisees.length
         },
         charts: {
-            monthlyRevenue: { labels: [], data: [] },
-            dailyRevenue: { labels: [], data: [] },
-            topTests: { labels: [], data: [] }
-        },
-        franchisees: []
-    };
-
-    // If no bookings, return empty response
-    if (bookings.length === 0) {
-        response.franchisees = franchisees;
-        response.stats.activeFranchises = franchisees.length;
-        return res.status(200).json(response);
-    }
-
-    // Single-pass calculation using Maps for O(1) lookups
-    let totalRevenue = 0;
-    let pendingTests = 0;
-    const dailyRevenue = new Map();
-    const monthlyRevenue = new Map();
-    const testCategories = new Map();
-
-    // Process all bookings in one loop
-    for (const booking of bookings) {
-        // Revenue calculation
-        const revenue = booking.total || 0;
-        totalRevenue += revenue;
-
-        // Pending tests count
-        if (booking.status === "pending") {
-            pendingTests++;
-        }
-
-        // Date-based calculations
-        if (booking.date) {
-            const date = new Date(booking.date);
-            
-            if (!isNaN(date.getTime())) {
-                // Daily revenue (YYYY-MM-DD format for proper sorting)
-                const dayKey = date.toISOString().split('T')[0];
-                dailyRevenue.set(dayKey, (dailyRevenue.get(dayKey) || 0) + revenue);
-
-                // Monthly revenue (YYYY-MM format)
-                const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-                monthlyRevenue.set(monthKey, (monthlyRevenue.get(monthKey) || 0) + revenue);
+            monthlyRevenue: {
+                labels: monthlyEntries.map(item => item._id),
+                data: monthlyEntries.map(item => Math.round(item.revenue)),
+                counts: monthlyEntries.map(item => item.count)
+            },
+            dailyRevenue: {
+                labels: dailyChartLabels,
+                data: dailyChartData,
+                counts: dailyChartCounts,
+                mode: dailyMode
+            },
+            topTests: {
+                labels: topTestEntries.map(item => item._id),
+                data: topTestEntries.map(item => item.count)
             }
-        }
-
-        // Test categories
-        if (booking.tableData?.[0]?.testName) {
-            const testName = booking.tableData[0].testName;
-            testCategories.set(testName, (testCategories.get(testName) || 0) + 1);
-        }
-    }
-
-    // Format stats
-    response.stats = {
-        totalBookings: bookings.length,
-        totalRevenue: Math.round(totalRevenue),
-        pendingTests,
-        activeFranchises: franchisees.length
+        },
+        recentBookings,
+        franchisees
     };
-
-    // Format monthly revenue chart data
-    const monthlyEntries = Array.from(monthlyRevenue.entries())
-        .sort(([a], [b]) => a.localeCompare(b));
-    
-    response.charts.monthlyRevenue = {
-        labels: monthlyEntries.map(([month]) => month),
-        data: monthlyEntries.map(([, value]) => Math.round(value))
-    };
-
-    // Format daily revenue chart data (last 30 days, reversed for chronological order)
-    const dailyEntries = Array.from(dailyRevenue.entries())
-        .sort(([a], [b]) => b.localeCompare(a))
-        .slice(0, 30)
-        .reverse();
-    
-    response.charts.dailyRevenue = {
-        labels: dailyEntries.map(([day]) => day),
-        data: dailyEntries.map(([, value]) => Math.round(value))
-    };
-
-    // Format top 4 test categories
-    const topTestEntries = Array.from(testCategories.entries())
-        .sort(([, a], [, b]) => b - a)
-        .slice(0, 4);
-    
-    response.charts.topTests = {
-        labels: topTestEntries.map(([name]) => name),
-        data: topTestEntries.map(([, count]) => count)
-    };
-
-    // Add franchisees data
-    response.franchisees = franchisees;
 
     return res.status(200).json(response);
 });
@@ -2147,7 +2967,7 @@ const updatebookingstatus = asyncHandler(async (req, res) => {
                 bookingId: bookingId
             },
             { status },
-            { returnDocument: 'after' }
+            { new: true }
         )
     }
 
@@ -2202,7 +3022,7 @@ const rejectBookingcontroller = async (req, res) => {
             status: "canceled",
             isreportready: false
         },
-        { returnDocument: 'after' }
+        { new: true }
     );
 
     if (userRole !== "admin") {
@@ -2223,7 +3043,7 @@ const rejectBookingcontroller = async (req, res) => {
             {
                 bookingWallet: user.bookingWallet + Number(updatedStatus.total)
             },
-            { returnDocument: 'after' }
+            { new: true }
         );
 
         if (!updatedUser) {
@@ -2261,14 +3081,18 @@ const rejectBookingcontroller = async (req, res) => {
 
 const CompleteBookingcontroller = async (req, res) => {
     const { bookingid } = req.body;
+    const reportDoc = await reports.findOne({ bookingId: bookingid })
+        .select("status completionMeta")
+        .lean();
+    const resolvedStatus = resolveBookingStatusFromReport(reportDoc);
 
     const updatedStatus = await newBooking.findOneAndUpdate(
         { bookingId: bookingid },
         {
-            status: "completed",
+            status: resolvedStatus,
             isreportready: true
         },
-        { returnDocument: 'after' }
+        { new: true }
     )
     // console.log("updated: ", updatedStatus);
 
@@ -2309,7 +3133,7 @@ const statusBookingcontroller = async (req, res) => {
         {
             status: status,
         },
-        { returnDocument: 'after' }
+        { new: true }
     )
     // console.log("updated: ", updatedStatus);
 
@@ -2471,17 +3295,33 @@ async function getbarcodetestsandpanels(tid, barcodeId) {
                 const addedTestIds = new Set();
                 const addedPanelIds = new Set();
 
-                doc.testIds.forEach(test => {
-                    if (test.sampleType === barcodeobject.typeOfSample && !addedTestIds.has(test._id.toString())) {
-                        packagetestNames.push(test.Name);
+                (doc.testIds || []).forEach((test, tIdx) => {
+                    if (!test) return;
+                    const testSamples = [
+                        ...(test.sampleType ? [test.sampleType] : []),
+                        ...(test.sample_type ? [test.sample_type] : []),
+                        ...(Array.isArray(test.sampleTypes) ? test.sampleTypes : []),
+                        ...(Array.isArray(doc.testSample) && doc.testSample[tIdx] ? [doc.testSample[tIdx]] : [])
+                    ];
+                    if (matchesBookingSampleType(testSamples, barcodeobject.typeOfSample, barcodeBooking.tableData.length <= 1) && !addedTestIds.has(test._id.toString())) {
+                        const name = test.Name || test.Short_name || '';
+                        if (name) packagetestNames.push(name);
                         packagetestObjects.push({ id: test._id, collectionName: "testSchema" });
                         addedTestIds.add(test._id.toString());
                     }
                 });
 
-                doc.pannelIds.forEach(panel => {
-                    if (panel.sample_types[0] === barcodeobject.typeOfSample && !addedPanelIds.has(panel._id.toString())) {
-                        packagepanelNames.push(panel.name);
+                (doc.pannelIds || []).forEach((panel, pIdx) => {
+                    if (!panel) return;
+                    const panelSamples = [
+                        ...(Array.isArray(panel.sample_types) ? panel.sample_types : []),
+                        ...(Array.isArray(panel.sampleTypes) ? panel.sampleTypes : []),
+                        ...(panel.sampleType ? [panel.sampleType] : []),
+                        ...(Array.isArray(doc.pannelSample) && doc.pannelSample[pIdx] ? [doc.pannelSample[pIdx]] : [])
+                    ];
+                    if (matchesBookingSampleType(panelSamples, barcodeobject.typeOfSample, barcodeBooking.tableData.length <= 1) && !addedPanelIds.has(panel._id.toString())) {
+                        const name = panel.name || panel.Short_name || '';
+                        if (name) packagepanelNames.push(name);
                         packagepanelObjects.push({ id: panel._id, collectionName: "addPannel" });
                         addedPanelIds.add(panel._id.toString());
                     }
@@ -2635,7 +3475,7 @@ const bookingreportgenOrnot = asyncHandler(async (req, res) => {
     const { bookingid } = req.body
 
     const updatedisreportready = await newBooking.findOneAndUpdate(
-        { bookingId: bookingid }, { isreportready: true }, { returnDocument: 'after' }
+        { bookingId: bookingid }, { isreportready: true }, { new: true }
     )
 
     if (!updatedisreportready) {
@@ -2697,10 +3537,43 @@ const getTestNameController = async (req, res) => {
     try {
         console.log("Received bookingId:", bookingId);
 
-        const barcodes = await acceptedBarcode.findOne({
+        let barcodes = await acceptedBarcode.findOne({
             tenantId: tid,
             bookingId: bookingId
         });
+
+        const hasValidBarcodes = barcodes
+            && Array.isArray(barcodes.barcodes)
+            && barcodes.barcodes.length > 0
+            && barcodes.barcodes.some(b => Array.isArray(b.testIds) && b.testIds.length > 0);
+
+        if (!hasValidBarcodes) {
+            const bookingDoc = await newBooking.findOne({
+                tenantId: tid,
+                bookingId: bookingId
+            });
+
+            if (bookingDoc && Array.isArray(bookingDoc.tableData) && bookingDoc.tableData.length > 0) {
+                const healedRows = await buildAcceptedBarcodeRowsForSync({
+                    tenantId: tid,
+                    bookingId: bookingId,
+                    tableData: bookingDoc.tableData
+                });
+
+                if (healedRows.length > 0) {
+                    await syncAcceptedBarcodesForBooking({
+                        tenantId: tid,
+                        bookingId: bookingId,
+                        tableData: healedRows,
+                        mode: "replace"
+                    });
+                    barcodes = await acceptedBarcode.findOne({
+                        tenantId: tid,
+                        bookingId: bookingId
+                    });
+                }
+            }
+        }
 
         if (!barcodes) {
             console.log("no barcodes found");
@@ -2761,51 +3634,44 @@ const getTestNameController = async (req, res) => {
                         }
 
                         // ✅ Handle Package
-                        if (obj.collectionName === "Package") {
+                        if (obj.collectionName === "Package" || String(obj.collectionName || '').toLowerCase() === "package") {
                             const packageKey = `${obj.id}_${element.typeOfSample}`;
                             if (processedPackages.has(packageKey)) {
-                                return { singleTests: [], panels: [] };
+                                return { singleTests: [], panels: [], packages: [] };
                             }
                             processedPackages.add(packageKey);
 
-                            // ✅ Find package by _id OR originalPackageId + tenantId
-                            const doc = await Package.findOne({
-                                $or: [
-                                    { _id: obj.id },
-                                    { originalPackageId: obj.id }
-                                ],
-                                tenantId: tid
-                            })
-                                .select('testIds pannelIds')
-                                .populate({
-                                    path: 'testIds',
-                                    match: {
-                                        $or: [
-                                            { _id: { $exists: true } },
-                                            { originalTestId: { $exists: true } }
-                                        ],
-                                        tenantId: tid
-                                    }
+                            // Find package by _id OR originalPackageId
+                            const doc = await Package.findById(obj.id)
+                                .select('packageName testIds pannelIds testSample pannelSample')
+                                .populate('testIds pannelIds')
+                                || await Package.findOne({
+                                    $or: [
+                                        { _id: obj.id },
+                                        { originalPackageId: obj.id }
+                                    ]
                                 })
-                                .populate({
-                                    path: 'pannelIds',
-                                    match: {
-                                        $or: [
-                                            { _id: { $exists: true } },
-                                            { originalPanelId: { $exists: true } }
-                                        ],
-                                        tenantId: tid
-                                    }
-                                });
+                                .select('packageName testIds pannelIds testSample pannelSample')
+                                .populate('testIds pannelIds');
 
-                            if (!doc) return { singleTests: [], panels: [] };
+                            if (!doc) return { singleTests: [], panels: [], packages: [] };
 
                             const packageTestIds = [];
                             const packagePanelIds = [];
+                            const targetSample = String(element.typeOfSample || '').trim();
+                            const isSingleSample = (barcodes?.barcodes || []).length <= 1;
 
-                            // ✅ Filter tests based on sample type
-                            doc.testIds?.forEach(test => {
-                                if (test && test.sampleType === element.typeOfSample) {
+                            // Filter tests based on sample type
+                            (doc.testIds || []).forEach((test, tIdx) => {
+                                if (!test) return;
+                                const testSamples = [
+                                    ...(test.sampleType ? [test.sampleType] : []),
+                                    ...(test.sample_type ? [test.sample_type] : []),
+                                    ...(Array.isArray(test.sampleTypes) ? test.sampleTypes : []),
+                                    ...(Array.isArray(doc.testSample) && doc.testSample[tIdx] ? [doc.testSample[tIdx]] : [])
+                                ];
+
+                                if (matchesBookingSampleType(testSamples, targetSample, isSingleSample)) {
                                     const testKey = test._id.toString();
                                     if (!processedTests.has(testKey)) {
                                         processedTests.add(testKey);
@@ -2814,9 +3680,17 @@ const getTestNameController = async (req, res) => {
                                 }
                             });
 
-                            // ✅ Filter panels based on sample type
-                            doc.pannelIds?.forEach(panel => {
-                                if (panel && panel.sample_types?.[0] === element.typeOfSample) {
+                            // Filter panels based on sample type (checking sample_types array properly!)
+                            (doc.pannelIds || []).forEach((panel, pIdx) => {
+                                if (!panel) return;
+                                const panelSamples = [
+                                    ...(Array.isArray(panel.sample_types) ? panel.sample_types : []),
+                                    ...(Array.isArray(panel.sampleTypes) ? panel.sampleTypes : []),
+                                    ...(panel.sampleType ? [panel.sampleType] : []),
+                                    ...(Array.isArray(doc.pannelSample) && doc.pannelSample[pIdx] ? [doc.pannelSample[pIdx]] : [])
+                                ];
+
+                                if (matchesBookingSampleType(panelSamples, targetSample, isSingleSample)) {
                                     const panelKey = panel._id.toString();
                                     if (!processedPanels.has(panelKey)) {
                                         processedPanels.add(panelKey);
@@ -2825,60 +3699,116 @@ const getTestNameController = async (req, res) => {
                                 }
                             });
 
-                            // ✅ Fetch full test documents with condition
+                            // Fallback if no specific row sample matched: include all package items
+                            if (packageTestIds.length === 0 && packagePanelIds.length === 0) {
+                                (doc.testIds || []).forEach(test => {
+                                    if (!test) return;
+                                    const testKey = test._id.toString();
+                                    if (!processedTests.has(testKey)) {
+                                        processedTests.add(testKey);
+                                        packageTestIds.push(test._id);
+                                    }
+                                });
+                                (doc.pannelIds || []).forEach(panel => {
+                                    if (!panel) return;
+                                    const panelKey = panel._id.toString();
+                                    if (!processedPanels.has(panelKey)) {
+                                        processedPanels.add(panelKey);
+                                        packagePanelIds.push(panel._id);
+                                    }
+                                });
+                            }
+
+                            // Fetch full test documents
                             const packageTests = await testSchema.find({
                                 $or: [
                                     { _id: { $in: packageTestIds } },
                                     { originalTestId: { $in: packageTestIds } }
-                                ],
-                                tenantId: tid
+                                ]
                             });
 
-                            // ✅ Fetch full panel documents with populated tests
+                            // Fetch full panel documents with populated tests
                             const packagePanels = await addPannel.find({
                                 $or: [
                                     { _id: { $in: packagePanelIds } },
                                     { originalPanelId: { $in: packagePanelIds } }
-                                ],
-                                tenantId: tid
-                            }).populate({
-                                path: 'testsId',
-                                match: {
-                                    $or: [
-                                        { _id: { $exists: true } },
-                                        { originalTestId: { $exists: true } }
-                                    ],
-                                    tenantId: tid
-                                }
-                            });
+                                ]
+                            }).populate('testsId');
 
-                            return { singleTests: packageTests, panels: packagePanels };
+                            return { singleTests: packageTests, panels: packagePanels, packages: [doc] };
                         }
 
-                        return { singleTests: [], panels: [] };
+                        return { singleTests: [], panels: [], packages: [] };
                     })
                 );
 
                 // ✅ Flatten results
-                const singleTests = array.flatMap(r => r.singleTests);
-                const panels = array.flatMap(r => r.panels);
+                const singleTests = array.flatMap(r => r.singleTests || []);
+                const panels = array.flatMap(r => r.panels || []);
+                const packages = array.flatMap(r => r.packages || []);
 
-                return { barcodes, singleTests, panels };
+                return { barcodes, singleTests, panels, packages };
             })
         );
 
         // ✅ Merge all barcode results
+        const barcodesObject = barcodes.toObject ? barcodes.toObject() : barcodes;
         const mergedResult = barcodeResults.reduce(
             (acc, curr, index) => {
                 if (index === 0) {
-                    acc.barcodes = curr.barcodes;
+                    acc.barcodes = barcodesObject;
                 }
-                acc.singleTests = [...acc.singleTests, ...curr.singleTests];
-                acc.panels = [...acc.panels, ...curr.panels];
+                acc.singleTests = [...acc.singleTests, ...(curr.singleTests || [])];
+                acc.panels = [...acc.panels, ...(curr.panels || [])];
+                acc.packages = [...(acc.packages || []), ...(curr.packages || [])];
                 return acc;
             },
-            { barcodes: {}, singleTests: [], panels: [] }
+            { barcodes: barcodesObject, singleTests: [], panels: [], packages: [] }
         );
+
+        // ✅ Build dynamic ID-to-Name map to reflect latest names from DB
+        const idToNameMap = new Map();
+
+        mergedResult.singleTests.forEach((test) => {
+            const name = test?.Short_name || test?.Name;
+            if (test?._id && name) idToNameMap.set(test._id.toString(), name);
+            if (test?.originalTestId && name) idToNameMap.set(test.originalTestId.toString(), name);
+        });
+
+        mergedResult.panels.forEach((panel) => {
+            if (panel?._id && panel?.name) idToNameMap.set(panel._id.toString(), panel.name);
+            if (panel?.originalPanelId && panel?.name) idToNameMap.set(panel.originalPanelId.toString(), panel.name);
+        });
+
+        (mergedResult.packages || []).forEach((pkg) => {
+            if (pkg?._id && pkg?.packageName) idToNameMap.set(pkg._id.toString(), pkg.packageName);
+            if (pkg?.originalPackageId && pkg?.packageName) idToNameMap.set(pkg.originalPackageId.toString(), pkg.packageName);
+        });
+
+        const allResolvedInvestigations = [];
+
+        if (Array.isArray(mergedResult.barcodes?.barcodes)) {
+            mergedResult.barcodes.barcodes.forEach((element) => {
+                const resolvedNames = [];
+                if (Array.isArray(element.testIds) && element.testIds.length > 0) {
+                    element.testIds.forEach((item) => {
+                        const idKey = item?.id?.toString();
+                        if (idKey && idToNameMap.has(idKey)) {
+                            resolvedNames.push(idToNameMap.get(idKey));
+                        }
+                    });
+                }
+
+                if (resolvedNames.length > 0) {
+                    element.testandpannelArray = [...new Set(resolvedNames)];
+                    allResolvedInvestigations.push(...resolvedNames);
+                } else if (Array.isArray(element.testandpannelArray)) {
+                    allResolvedInvestigations.push(...element.testandpannelArray);
+                }
+            });
+        }
+
+        mergedResult.investigations = [...new Set(allResolvedInvestigations.filter(Boolean))];
 
         return res.status(200).json([mergedResult]);
     } catch (error) {
@@ -3086,15 +4016,9 @@ const editBookingController = async (req, res) => {
 
         let { subFranchiseeId, savedDoctorId, savedLabId } = req.body;
 
-        // ✅ Validate and clean ObjectIds
-        const isValidObjectId = (id) => {
-            if (!id || id === "null" || id === "undefined") return false;
-            return /^[0-9a-fA-F]{24}$/.test(id);
-        };
-
-        subFranchiseeId = isValidObjectId(subFranchiseeId) ? subFranchiseeId : null;
-        savedDoctorId = isValidObjectId(savedDoctorId) ? savedDoctorId : null;
-        savedLabId = isValidObjectId(savedLabId) ? savedLabId : null;
+        subFranchiseeId = normalizeOptionalObjectIdInput(subFranchiseeId, "subFranchiseeId");
+        savedDoctorId = normalizeOptionalObjectIdInput(savedDoctorId, "savedDoctorId");
+        savedLabId = normalizeOptionalObjectIdInput(savedLabId, "savedLabId");
 
         // 🔍 Pehle purani booking lao
         if (!bookingId) {
@@ -3302,7 +4226,7 @@ const updategeneratedbillvariable = async (req, res) => {
     const updateddoc = await newBooking.findOneAndUpdate(
         { bookingId: bookingid },
         { billGenerated: true },
-        { returnDocument: 'after' }
+        { new: true }
     );
 
     if (!updateddoc) {
@@ -3340,85 +4264,107 @@ const updategeneratedbillvariable = async (req, res) => {
 const HoldBookings = asyncHandler(async (req, res) => {
     let userId;
     if (req.user.role === 'staff') {
-        userId = req.user.parentUser
+        userId = req.user.parentUser;
     } else {
-        userId = req.user._id
+        userId = req.user._id;
     }
     const tenantId = req.user.tenantId;
 
+    const holdList = await newBooking.aggregate([
+        {
+            $match: {
+                createdBy: new mongoose.Types.ObjectId(userId),
+                tenantId: new mongoose.Types.ObjectId(tenantId._id),
+                status: { $in: ["Hold", "clinical"] }
+            }
+        },
+        { $sort: { createdAt: -1 } },
+        {
+            $lookup: {
+                from: "conversations",
+                let: { bId: "$bookingId" },
+                pipeline: [
+                    {
+                        $match: {
+                            $expr: {
+                                $and: [
+                                    { $eq: ["$bookingId", "$$bId"] },
+                                    { $eq: ["$tenantId", new mongoose.Types.ObjectId(tenantId._id)] }
+                                ]
+                            }
+                        }
+                    },
+                    { $project: { messages: 1, _id: 0 } }
+                ],
+                as: "convData"
+            }
+        },
+        {
+            $addFields: {
+                messages: { $arrayElemAt: ["$convData.messages", 0] }
+            }
+        },
+        { $project: { convData: 0 } }
+    ]);
 
-    console.log("tenantId:", tenantId._id);
-    console.log("createdBy:", userId);
-
-    const HoldBookings = await newBooking.find({
-
-        createdBy: userId,
-        status: { $in: ["Hold", "clinical"] }
-    }).lean();
-
-    if (!HoldBookings || HoldBookings.length === 0) {
-        console.log("Hold bookings not found");
+    if (!holdList || holdList.length === 0) {
         return res.status(200).json(new ApiResponse(200, "empty"));
     }
 
-    // Add messages to each booking
-    for (let booking of HoldBookings) {
-
-        const conversation = await Conversation.findOne({
-            bookingId: booking.bookingId,
-            tenantId: tenantId._id
-        });
-
-        if (conversation) {
-            console.log("conversation found");
-
-            booking.messages = conversation.messages;
-        }
-    }
-
-    return res.status(200).json(new ApiResponse(200, HoldBookings, "Hold bookings fetched successfully"));
+    return res.status(200).json(new ApiResponse(200, holdList, "Hold bookings fetched successfully"));
 });
 
 const canceledBookings = asyncHandler(async (req, res) => {
     let userId;
     if (req.user.role === 'staff') {
-        userId = req.user.parentUser
+        userId = req.user.parentUser;
     } else {
-        userId = req.user._id
+        userId = req.user._id;
     }
-
     const tenantId = req.user.tenantId;
 
-    console.log("tenantId:", tenantId._id);
-    console.log("createdBy:", userId);
+    const cancelList = await newBooking.aggregate([
+        {
+            $match: {
+                createdBy: new mongoose.Types.ObjectId(userId),
+                tenantId: new mongoose.Types.ObjectId(tenantId._id),
+                status: "cancelled"
+            }
+        },
+        { $sort: { createdAt: -1 } },
+        {
+            $lookup: {
+                from: "conversations",
+                let: { bId: "$bookingId" },
+                pipeline: [
+                    {
+                        $match: {
+                            $expr: {
+                                $and: [
+                                    { $eq: ["$bookingId", "$$bId"] },
+                                    { $eq: ["$tenantId", new mongoose.Types.ObjectId(tenantId._id)] }
+                                ]
+                            }
+                        }
+                    },
+                    { $project: { messages: 1, _id: 0 } }
+                ],
+                as: "convData"
+            }
+        },
+        {
+            $addFields: {
+                messages: { $arrayElemAt: ["$convData.messages", 0] }
+            }
+        },
+        { $project: { convData: 0 } }
+    ]);
 
-    const HoldBookings = await newBooking.find({
-
-        createdBy: userId,
-        status: "cancelled"
-    }).sort({ createdAt: -1 }).lean();
-
-    if (!HoldBookings || HoldBookings.length === 0) {
-        console.log("Hold bookings not found");
+    if (!cancelList || cancelList.length === 0) {
         return res.status(200).json(new ApiResponse(200, "empty"));
     }
 
-    // Add messages to each booking
-    for (let booking of HoldBookings) {
-
-        const conversation = await Conversation.findOne({
-            bookingId: booking.bookingId,
-            tenantId: tenantId._id
-        });
-
-        if (conversation) {
-            console.log("conversation found");
-
-            booking.messages = conversation.messages;
-        }
-    }
-
-    return res.status(200).json(new ApiResponse(200, HoldBookings, "Hold bookings fetched successfully"));
+    return res.status(200).json(new ApiResponse(200, cancelList, "Hold bookings fetched successfully"));
 });
 
 const countBookingsForAllTenants = asyncHandler(async (req, res) => {
@@ -3516,10 +4462,12 @@ const getAllCancelledBookingsController = asyncHandler(async (req, res) => {
         barcode
     } = req.body;
 
-    const skip = (page - 1) * limit;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.max(1, parseInt(limit, 10) || 50);
+    const skip = (pageNum - 1) * limitNum;
 
     let query = {
-        tenantId: req.user.tenantId._id,
+        tenantId: new mongoose.Types.ObjectId(req.user.tenantId._id),
         status: { $in: ["cancelled", "canceled"] }
     };
 
@@ -3533,7 +4481,7 @@ const getAllCancelledBookingsController = asyncHandler(async (req, res) => {
     if (franchisee) query.createdbyuser = { $regex: franchisee, $options: 'i' };
     if (doctorName) query.doctorName = { $regex: doctorName, $options: 'i' };
 
-    // Handle barcode filter
+    // Handle barcode filter efficiently
     if (barcode) {
         const barcodeDocs = await acceptedBarcode.find(
             { "barcodes.barcode": { $regex: barcode, $options: 'i' } },
@@ -3547,97 +4495,143 @@ const getAllCancelledBookingsController = asyncHandler(async (req, res) => {
             return res.status(200).json({
                 bookings: [],
                 total: 0,
-                page: parseInt(page),
-                limit: parseInt(limit),
+                page: pageNum,
+                limit: limitNum,
             });
         }
     }
 
-    // Fetch bookings with pagination
-    const bookings = await newBooking
-        .find(query)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(parseInt(limit))
-        .lean();
-
-    const total = await newBooking.countDocuments(query);
-
-    // Process barcodes and LIS data for current page bookings
-    if (bookings.length > 0) {
-        const bookingIds = bookings.map(b => b.bookingId);
-
-        // Fetch barcodes for current page
-        const barcodeData = await acceptedBarcode.find(
-            { bookingId: { $in: bookingIds } },
-            { bookingId: 1, barcodes: 1 }
-        ).lean();
-
-        // Create barcode map
-        const barcodeMap = new Map();
-        const allBarcodeIds = []; // Collect all barcode IDs for LIS check
-
-        barcodeData.forEach(doc => {
-            const barcodes = doc.barcodes.map(b => b.barcode);
-            barcodeMap.set(doc.bookingId, barcodes);
-            allBarcodeIds.push(...barcodes);
-        });
-
-        // Check LIS data availability for all barcodes in one query
-        let lisAvailabilityMap = new Map();
-
-        if (allBarcodeIds.length > 0) {
-            const lisDataDocs = await lisdata.find(
-                { "lisData.sample_id": { $in: allBarcodeIds } },
-                { "lisData.sample_id": 1 }
-            ).lean();
-
-            // Create a set of barcodes that have LIS data for O(1) lookup
-            const barcodesWithLis = new Set(
-                lisDataDocs.map(doc => doc.lisData?.sample_id).filter(Boolean)
-            );
-
-            // Map each barcode to its LIS availability
-            allBarcodeIds.forEach(barcodeId => {
-                lisAvailabilityMap.set(barcodeId, barcodesWithLis.has(barcodeId));
-            });
+    const aggregationResults = await newBooking.aggregate([
+        { $match: query },
+        { $sort: { createdAt: -1 } },
+        {
+            $facet: {
+                metadata: [{ $count: "total" }],
+                bookings: [
+                    { $skip: skip },
+                    { $limit: limitNum },
+                    {
+                        $lookup: {
+                            from: "acceptedbarcodes",
+                            localField: "bookingId",
+                            foreignField: "bookingId",
+                            as: "barcodeDoc"
+                        }
+                    },
+                    {
+                        $addFields: {
+                            acceptedbarcodeObj: { $arrayElemAt: ["$barcodeDoc", 0] }
+                        }
+                    },
+                    {
+                        $addFields: {
+                            acceptedbarcode: {
+                                $ifNull: [
+                                    {
+                                        $map: {
+                                            input: { $ifNull: ["$acceptedbarcodeObj.barcodes", []] },
+                                            as: "b",
+                                            in: "$$b.barcode"
+                                        }
+                                    },
+                                    []
+                                ]
+                            }
+                        }
+                    },
+                    {
+                        $lookup: {
+                            from: "lisdatas",
+                            localField: "acceptedbarcode",
+                            foreignField: "lisData.sample_id",
+                            as: "lisDocs"
+                        }
+                    },
+                    {
+                        $addFields: {
+                            lisSampleSet: {
+                                $map: {
+                                    input: "$lisDocs",
+                                    as: "ld",
+                                    in: "$$ld.lisData.sample_id"
+                                }
+                            }
+                        }
+                    },
+                    {
+                        $addFields: {
+                            barcodeDetails: {
+                                $map: {
+                                    input: "$acceptedbarcode",
+                                    as: "code",
+                                    in: {
+                                        barcode: "$$code",
+                                        isLisPresent: { $in: ["$$code", "$lisSampleSet"] }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        $addFields: {
+                            isLisPresent: {
+                                $gt: [
+                                    {
+                                        $size: {
+                                            $filter: {
+                                                input: "$barcodeDetails",
+                                                as: "bd",
+                                                cond: { $eq: ["$$bd.isLisPresent", true] }
+                                            }
+                                        }
+                                    },
+                                    0
+                                ]
+                            },
+                            lisStats: {
+                                total: { $size: "$barcodeDetails" },
+                                withLis: {
+                                    $size: {
+                                        $filter: {
+                                            input: "$barcodeDetails",
+                                            as: "bd",
+                                            cond: { $eq: ["$$bd.isLisPresent", true] }
+                                        }
+                                    }
+                                },
+                                withoutLis: {
+                                    $size: {
+                                        $filter: {
+                                            input: "$barcodeDetails",
+                                            as: "bd",
+                                            cond: { $eq: ["$$bd.isLisPresent", false] }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        $project: {
+                            barcodeDoc: 0,
+                            acceptedbarcodeObj: 0,
+                            lisDocs: 0,
+                            lisSampleSet: 0
+                        }
+                    }
+                ]
+            }
         }
+    ]);
 
-        // Attach barcodes and LIS status to each booking
-        bookings.forEach(booking => {
-            const bookingBarcodes = barcodeMap.get(booking.bookingId) || [];
-
-            // Create detailed barcode status array
-            const barcodeDetails = bookingBarcodes.map(barcode => ({
-                barcode: barcode,
-                isLisPresent: lisAvailabilityMap.get(barcode) || false
-            }));
-
-            // Backward compatibility - keep old format
-            booking.acceptedbarcode = bookingBarcodes;
-
-            // New detailed format
-            booking.barcodeDetails = barcodeDetails;
-
-            // Overall LIS status - true if ANY barcode has LIS data
-            booking.isLisPresent = barcodeDetails.length > 0
-                ? barcodeDetails.some(detail => detail.isLisPresent === true)
-                : false;
-
-            // Additional stats
-            booking.lisStats = {
-                total: barcodeDetails.length,
-                withLis: barcodeDetails.filter(d => d.isLisPresent).length,
-                withoutLis: barcodeDetails.filter(d => !d.isLisPresent).length
-            };
-        });
-    }
+    const total = aggregationResults[0]?.metadata[0]?.total || 0;
+    const bookings = aggregationResults[0]?.bookings || [];
 
     return res.status(200).json({
         bookings,
         total,
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: pageNum,
+        limit: limitNum,
     });
 });
 

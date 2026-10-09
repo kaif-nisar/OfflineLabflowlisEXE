@@ -2,6 +2,51 @@ import mongoose, { Schema } from "mongoose";
 import { Tenant } from "./tenant.model.js";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
+import { randomUUID } from "node:crypto";
+
+const activeSessionSchema = new Schema(
+  {
+    session_token: {
+      type: String,
+      required: true,
+      index: true,
+    },
+    device_fingerprint: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    last_activity_at: {
+      type: Date,
+      default: Date.now,
+    },
+    ip_address: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    user_agent: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    location: {
+      latitude: { type: Number, default: null },
+      longitude: { type: Number, default: null },
+      city: { type: String, default: "", trim: true },
+      state: { type: String, default: "", trim: true },
+      country: { type: String, default: "", trim: true },
+      label: { type: String, default: "", trim: true },
+      source: { type: String, default: "", trim: true },
+    },
+    expires_at: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+  },
+  { _id: false }
+);
 
 const userSchema = new Schema(
   {
@@ -72,6 +117,27 @@ const userSchema = new Schema(
     },
     refreshToken: {
       type: String,
+    },
+    // Hashed refresh tokens of every device/browser that is still signed in.
+    // Keeps a login on one device from signing the other devices out.
+    refreshTokenHashes: {
+      type: [String],
+      default: [],
+    },
+
+    is_device_restriction_enabled: {
+      type: Boolean,
+      default: true,
+    },
+    max_allowed_devices: {
+      type: Number,
+      default: 1,
+      min: 1,
+      max: 4,
+    },
+    active_sessions: {
+      type: [activeSessionSchema],
+      default: [],
     },
     upiScreenshots: [
       {
@@ -402,6 +468,7 @@ const userSchema = new Schema(
             "test_create",
             "subscription_renewal",
             "subscription_expiry", // ✅ Add this line
+            "logout",
             "referral_commission",
             "withdrawal_request",
             'booking_created',
@@ -436,6 +503,7 @@ const userSchema = new Schema(
 // Indexes for better performance
 userSchema.index({ "subscription.endDate": 1 });
 userSchema.index({ "subscription.isActive": 1 });
+userSchema.index({ tenantId: 1, role: 1, isActive: 1 });
 
 // Pre-save middleware for password hashing
 userSchema.pre("save", async function () {
@@ -478,6 +546,7 @@ userSchema.methods.generateAccessToken = function () {
     },
     process.env.SUPER_ADMIN_ACCESS_TOKEN_SECRET,
     {
+      jwtid: randomUUID(),
       expiresIn: process.env.ACCESS_TOKEN_EXPIRY,
     }
   );
@@ -868,5 +937,8 @@ userSchema.statics.getExpiringSubscriptions = async function (days = 5) {
     "subscription.isActive": true,
   });
 };
+
+userSchema.index({ tenantId: 1, role: 1, isActive: 1 });
+userSchema.index({ createdBy: 1, role: 1 });
 
 export const User = mongoose.model("User", userSchema);

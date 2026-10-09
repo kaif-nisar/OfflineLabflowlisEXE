@@ -270,7 +270,7 @@ const updateDoctorController = asyncHandler(async (req, res) => {
         ...(address && { address }),
         ...(email !== undefined && { email: normalizedEmail }),
       },
-      { returnDocument: 'after' }
+      { new: true }
     );
   } catch (error) {
     rethrowDoctorWriteError(error);

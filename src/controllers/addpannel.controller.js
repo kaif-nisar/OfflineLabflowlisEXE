@@ -23,11 +23,15 @@ const addpannelcontroller = asyncHandler(async (req, res) => {
     hideMethodInstrument,
     hidePanelInterpretation,
     final_price,
-    testsId
+    testsId,
+    Short_name,
+    short_name,
+    shortName
   } = req.body;
   const normalizedHideInterpretation = parseBooleanInput(req.body.hideInterpretation);
   const normalizedHideMethodInstrument = parseBooleanInput(req.body.hideMethodInstrument);
   const normalizedHidePanelInterpretation = parseBooleanInput(req.body.hidePanelInterpretation);
+  const resolvedShortName = String(Short_name ?? shortName ?? short_name ?? "").trim();
 
   let userId
   if (req.user.role === 'staff') {
@@ -70,6 +74,7 @@ const addpannelcontroller = asyncHandler(async (req, res) => {
     order: nextOrder,
     bookingCode: nextBookingCode,
     name: pannelname,
+    Short_name: resolvedShortName,
     category,
     price,
     tests: inputarray,
@@ -138,11 +143,15 @@ const addpannelcontrollerforadmin = asyncHandler(async (req, res) => {
     hideMethodInstrument,
     hidePanelInterpretation,
     final_price,
-    testsId
+    testsId,
+    Short_name,
+    short_name,
+    shortName
   } = req.body;
   const normalizedHideInterpretation = parseBooleanInput(req.body.hideInterpretation);
   const normalizedHideMethodInstrument = parseBooleanInput(req.body.hideMethodInstrument);
   const normalizedHidePanelInterpretation = parseBooleanInput(req.body.hidePanelInterpretation);
+  const resolvedShortName = String(Short_name ?? shortName ?? short_name ?? "").trim();
 
 
   let userId;
@@ -184,6 +193,7 @@ const addpannelcontrollerforadmin = asyncHandler(async (req, res) => {
     order: nextOrder,
     bookingCode: nextBookingCode,
     name: pannelname,
+    Short_name: resolvedShortName,
     category,
     price,
     tests: inputarray,
@@ -295,7 +305,10 @@ const editPannelController = asyncHandler(async (req, res) => {
     hideInterpretation,
     hideMethodInstrument,
     hidePanelInterpretation,
-    testsId
+    testsId,
+    Short_name,
+    short_name,
+    shortName
   } = req.body;
   const normalizedHideInterpretation = parseBooleanInput(req.body.hideInterpretation);
   const normalizedHideMethodInstrument = parseBooleanInput(req.body.hideMethodInstrument);
@@ -321,9 +334,12 @@ const editPannelController = asyncHandler(async (req, res) => {
       hidePanelInterpretation: normalizedHidePanelInterpretation,
       hidepanelinterpretation: normalizedHidePanelInterpretation,
       final_price,
-      testsId
+      testsId,
+      ...(Short_name !== undefined || shortName !== undefined || short_name !== undefined
+        ? { Short_name: String(Short_name ?? shortName ?? short_name ?? "").trim() }
+        : {})
     },
-    { returnDocument: 'after' }
+    { new: true }
   );
 
   if (!editedPannel) {
@@ -372,7 +388,10 @@ const adminEditPannelController = asyncHandler(async (req, res) => {
     hideInterpretation,
     hideMethodInstrument,
     hidePanelInterpretation,
-    testsId
+    testsId,
+    Short_name,
+    short_name,
+    shortName
   } = req.body;
   const normalizedHideInterpretation = parseBooleanInput(req.body.hideInterpretation);
   const normalizedHideMethodInstrument = parseBooleanInput(req.body.hideMethodInstrument);
@@ -398,9 +417,12 @@ const adminEditPannelController = asyncHandler(async (req, res) => {
       hidePanelInterpretation: normalizedHidePanelInterpretation,
       hidepanelinterpretation: normalizedHidePanelInterpretation,
       final_price,
-      testsId
+      testsId,
+      ...(Short_name !== undefined || shortName !== undefined || short_name !== undefined
+        ? { Short_name: String(Short_name ?? shortName ?? short_name ?? "").trim() }
+        : {})
     },
-    { returnDocument: 'after' }
+    { new: true }
   );
 
   if (!editedPannel) {
@@ -564,6 +586,15 @@ const tenantAllPanel = asyncHandler(async (req, res) => {
   }
 });
 
+const deletePanelsController = asyncHandler(async (req, res) => {
+    const { panelIds } = req.body;
+    if (!panelIds || !Array.isArray(panelIds) || panelIds.length === 0) {
+        throw new ApiError(400, "panelIds array is required");
+    }
+    const deletedPanels = await addPannel.deleteMany({ _id: { $in: panelIds } });
+    return res.status(200).json(new ApiResponse(200, deletedPanels, "Panels deleted successfully"));
+});
+
 export {
   addpannelcontroller,
   allPannelcontroller,
@@ -574,4 +605,5 @@ export {
   tenantAllPanel,
   addpannelcontrollerforadmin,
   adminEditPannelController,
+  deletePanelsController,
 };

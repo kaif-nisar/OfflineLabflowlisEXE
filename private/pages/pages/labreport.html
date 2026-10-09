@@ -16,7 +16,7 @@
             margin: auto;
             border-radius: 8px;
             height: auto;
-            padding: 30px 25px;
+            padding: 0px 30px 25px 25px;
             position: relative;
         }
 
@@ -284,13 +284,23 @@
             align-items: center;
             gap: 4px;
             padding-left: 0;
+            width: 100%;
+            min-width: 0;
+            overflow: visible;
         }
 
         .formulaIcon {
-            display: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 26px;
+            width: 26px;
+            min-width: 26px;
+            overflow: visible;
         }
 
         .HighLow {
+            flex: 0 0 16px;
             min-width: 16px;
             text-align: center;
             font-weight: 700;
@@ -300,7 +310,11 @@
             position: relative;
             display: inline-flex;
             align-items: center;
-            width: 210px; /* reduced 30px for tighter layout */
+            flex: 1 1 auto;
+            min-width: 0;
+            width: 190px;
+            max-width: 190px;
+            overflow: visible;
         }
 
         .value-field .value-input {
@@ -308,6 +322,18 @@
             width: 100%;
             padding-right: 30px;
             box-sizing: border-box;
+            transition: border-color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
+        }
+
+        .value-field .value-input.value-input--aggregate-error {
+            border-color: #c62828;
+            box-shadow: 0 0 0 3px rgba(198, 40, 40, 0.14);
+            background-color: #fff6f6;
+        }
+
+        .value-field .value-input.value-input--aggregate-error:focus {
+            border-color: #b71c1c;
+            box-shadow: 0 0 0 3px rgba(183, 28, 28, 0.18);
         }
 
         .text-dropdown-trigger {
@@ -460,6 +486,12 @@
             left: 50%;
             transform: translate(-50%, -50%);
             overflow-y: scroll;
+            z-index: 2147483647;
+        }
+
+        #content-box.reference-modal-active {
+            z-index: 3000000001;
+            isolation: auto;
         }
 
         .row-container {
@@ -628,6 +660,11 @@
             border-radius: 2px;
             font-family: sans-serif;
             box-shadow: 0px 0px 10px rgb(196, 196, 196);
+        }
+
+        .final-button-div button span {
+            color: white;
+            font-family: sans-serif;
         }
 
         #finalBtn {
@@ -857,10 +894,6 @@
             color: #20b801;
         }
 
-        .container {
-            margin-bottom: 4rem;
-        }
-
         #signOff {
             background-color: #00b7ffb0;
             border-radius: 5px;
@@ -1025,7 +1058,8 @@
         }
 
         .modal {
-            z-index: 500000;
+            z-index: 2147483646;
+            isolation: isolate;
         }
 
         .para-name {
@@ -1184,19 +1218,47 @@
         .value-column {
             display: flex;
             align-items: center;
+            width: 100%;
+            overflow: visible;
         }
 
         .formulaIcon {
-            font-size: 0.75rem;
-            width: 35px;
+            font-size: 0.95rem;
+            overflow: visible;
         }
 
-        /* .formulaIcon:empty {
-            width: 0px;
-        } */
+        .formulaIcon .icon {
+            position: relative;
+        }
 
-        .formulaIcon span {
-            font-size: 1.25rem;
+        .formula-icon-button {
+            width: 22px;
+            height: 22px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            border: 1px solid #d6e2f3;
+            border-radius: 999px;
+            background: linear-gradient(180deg, #ffffff 0%, #edf4ff 100%);
+            color: #1f5ea8;
+            box-shadow: 0 8px 18px rgba(26, 115, 232, 0.12);
+            cursor: pointer;
+            line-height: 1;
+            transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+        }
+
+
+        .formula-icon-button i {
+            display: block;
+            font-size: 0.78rem;
+            line-height: 1;
+        }
+
+        .formula-tooltip-container {
+            background: transparent;
+            border: none;
+            box-shadow: none;
         }
 
         .hidden {
@@ -1329,6 +1391,7 @@
 
         td.unit {
             width: 30%;
+            overflow: visible;
         }
 
         table tbody td:first-child {
@@ -1409,6 +1472,35 @@
             text-align: center;
         }
 
+        .differential-total-row td {
+            padding: 8px 14px;
+        }
+
+        .differential-total-cell {
+            background: transparent;
+            color: inherit;
+            border: none;
+            border-radius: 0;
+            box-shadow: none;
+            transition: none;
+        }
+
+        .differential-total-cell.is-valid {
+            background: transparent;
+            color: inherit;
+            box-shadow: none;
+        }
+
+        .differential-total-cell.is-invalid {
+            background: transparent;
+            color: inherit;
+            box-shadow: none;
+        }
+
+        .aggregate-invalid-row .test-name {
+            color: #8e1d1d;
+        }
+
 
         @keyframes spin {
             0% {
@@ -1422,28 +1514,62 @@
 
         .tooltip-box {
             position: absolute;
-            background-color: #333;
-            color: #fff;
-            padding: 10px;
-            border-radius: 5px;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
-            font-size: 0.75rem;
-            z-index: 1000;
+            top: 50%;
+            right: calc(100% + 12px);
+            left: auto;
+            transform: translateY(-50%) translateX(6px);
+            background: #fff;
+            color: #203047;
+            padding: 12px 14px;
+            border-radius: 12px;
+            border: 1px solid #d9e5f3;
+            box-shadow: 0 18px 36px rgba(17, 24, 39, 0.16);
+            font-size: 0.78rem;
+            z-index: 2147483000;
             white-space: normal;
-            width: 20rem;
-            top: -10px;
-            right: 25px;
-            display: none;
+            width: min(320px, 46vw);
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+            transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s ease;
         }
 
         .tooltip-box::after {
             content: "";
             position: absolute;
-            top: 10px;
-            left: -5px;
-            border-width: 5px;
+            top: 50%;
+            right: -7px;
+            left: auto;
+            transform: translateY(-50%);
+            border-width: 7px;
             border-style: solid;
-            border-color: transparent #333 transparent transparent;
+            border-color: transparent transparent transparent #fff;
+            filter: drop-shadow(1px 0 0 #d9e5f3);
+        }
+
+        .formula-icon-button:hover .tooltip-box,
+        .formula-icon-button:focus-visible .tooltip-box {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(-50%) translateX(0);
+        }
+
+        .tooltip-box__label {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-weight: 700;
+            color: #5f738c;
+            margin-bottom: 6px;
+        }
+
+        .tooltip-box__formula {
+            display: block;
+            font-family: "Consolas", "Courier New", monospace;
+            font-size: 0.8rem;
+            line-height: 1.5;
+            color: #12385f;
+            white-space: normal;
         }
 
         .alert {
@@ -1451,6 +1577,27 @@
             top: 75px;
             right: 2%;
             width: 75%;
+            z-index: 50000;
+            opacity: 1;
+            background-color: #ffffff;
+            border: 1px solid #d1d5db;
+            box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+        }
+
+        .alert.alert-success {
+            background-color: #dff6e7;
+            border-color: #7bc69a;
+            color: #135c2b;
+        }
+
+        .alert.alert-danger {
+            background-color: #fde7e7;
+            border-color: #e3a1a1;
+            color: #8f1d1d;
+        }
+
+        .alert.show {
+            opacity: 1;
         }
 
         /* .table td,
@@ -1481,6 +1628,7 @@
             background-color: white;
             padding: 5px;
         }
+
         button.text-dropdown-trigger {
             padding: 0px;
             width: 20px;
@@ -1491,6 +1639,41 @@
             border: none;
             background: transparent;
             cursor: pointer;
+        }
+
+        @media screen and (max-width: 600px) {
+            .container {
+                padding: 0px;
+            }
+
+            .content-box {
+                overflow: auto;
+            }
+
+            .final-button-div {
+                width: 100%;
+                left: 0;
+                overflow: auto;
+            }
+
+            .final-button-div button {
+                .final-button-div button {
+                    padding: 8px;
+                }
+            }
+
+
+            .final-button-div button span {
+                display: none;
+            }
+
+            .final-button-div button i {
+                color: white
+            }
+
+            .moreDetailsDiv {
+                padding: 0px 10px;
+            }
         }
     </style>
     <link rel="stylesheet" href="/vendor/ckeditor5/ckeditor5.css">
@@ -1630,11 +1813,11 @@
         </div>
     </div>
     <div class="final-button-div">
-        <button id="finalBtn"><i class="fa-solid fa-check"></i> final</button>
-        <button id="saveBtn"><i class="fa-solid fa-floppy-disk"></i> Save only</button>
-        <button id="getresult"><i class="fa-solid fa-square-poll-horizontal"></i>Get LIS</button>
-        <button id="modifycase"><i class="fa-solid fa-file-pen"></i>Edit Case</button>
-        <button id="randomresult"><i class="fa-solid fa-square-poll-horizontal"></i>Get Result</button>
+        <button id="finalBtn"><i class="fa-solid fa-check"></i> <span>final</span></button>
+        <button id="saveBtn"><i class="fa-solid fa-floppy-disk"></i> <span>Save only</span></button>
+        <button id="getresult"><i class="fa-solid fa-square-poll-horizontal"></i><span>Get LIS</span></button>
+        <button id="modifycase"><i class="fa-solid fa-file-pen"></i><span>Edit Case</span></button>
+        <button id="randomresult"><i class="fa-solid fa-square-poll-horizontal"></i><span>Get Result</span></button>
     </div>
 
     <script src="/vendor/ckeditor5/browser/ckeditor5.umd.js"></script>

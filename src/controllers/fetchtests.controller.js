@@ -3,6 +3,36 @@ import { testSchema } from "../models/newTest.model.js";
 import { Package } from "../models/addPackage.model.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/apiError.js";
+import mongoose from "mongoose";
+
+function createMasterParameterKey() {
+    return `param_${new mongoose.Types.ObjectId().toString()}`;
+}
+
+async function ensureTestDocumentMasterKeys(testDocument) {
+    if (!testDocument?.parameters?.length) {
+        return testDocument;
+    }
+
+    let hasChanges = false;
+
+    for (const parameter of testDocument.parameters) {
+        const masterParameterKey = String(parameter?.masterParameterKey || "").trim();
+        if (masterParameterKey) {
+            continue;
+        }
+
+        parameter.masterParameterKey = createMasterParameterKey();
+        hasChanges = true;
+    }
+
+    if (hasChanges) {
+        testDocument.markModified("parameters");
+        await testDocument.save();
+    }
+
+    return testDocument;
+}
 
 const allTestdetails = asyncHandler(async (req, res) => {
     const { value1 } = req.body;
@@ -16,6 +46,7 @@ const allTestdetails = asyncHandler(async (req, res) => {
         // Check if it's a single test
         const singleTest = await testSchema.findOne({ Name: trimmedTpp });
         if (singleTest) {
+            await ensureTestDocumentMasterKeys(singleTest);
             singleTestsSet.add(JSON.stringify(singleTest));
             continue; // Move to the next item in the loop
         }
@@ -28,6 +59,7 @@ const allTestdetails = asyncHandler(async (req, res) => {
             for (const testName of panel.tests) {
                 const test = await testSchema.findOne({ Name: testName });
                 if (test) {
+                    await ensureTestDocumentMasterKeys(test);
                     panelTests.push(test); // Add test to panel's test array
                 }
             }
@@ -46,6 +78,7 @@ const allTestdetails = asyncHandler(async (req, res) => {
             for (const testName of packageData.testname || []) {
                 const test = await testSchema.findOne({ Name: testName });
                 if (test) {
+                    await ensureTestDocumentMasterKeys(test);
                     singleTestsSet.add(JSON.stringify(test));
                 }
             }
@@ -59,6 +92,7 @@ const allTestdetails = asyncHandler(async (req, res) => {
                     for (const testName of panel.tests) {
                         const test = await testSchema.findOne({ Name: testName });
                         if (test) {
+                            await ensureTestDocumentMasterKeys(test);
                             panelTests.push(test);
                         }
                     }
@@ -87,17 +121,30 @@ const allTestdetails = asyncHandler(async (req, res) => {
 
 const defaultResultsGet = asyncHandler(async (req, res) => {
 
-    const { testName } = req.body;
+    const { testName, testId, parameterId } = req.body;
 
-    console.log(testName)
+    console.log({ testName, testId, parameterId })
 
-    if (!testName) {
+    if (!testName && !parameterId) {
         throw new ApiError(500, "please click again on edit range")
     }
 
-    const testDocument = await testSchema.findOne({ 
-        "parameters.Para_name": testName
-     });
+    const tenantId = req.user?.tenantId?._id;
+    const baseQuery = {
+        tenantId
+    };
+
+    if (testId) {
+        baseQuery._id = testId;
+    }
+
+    if (parameterId) {
+        baseQuery["parameters._id"] = parameterId;
+    } else if (testName) {
+        baseQuery["parameters.Para_name"] = testName;
+    }
+
+    const testDocument = await testSchema.findOne(baseQuery);
 
     console.log("testDocument:", testDocument)
 
@@ -105,7 +152,24 @@ const defaultResultsGet = asyncHandler(async (req, res) => {
         throw new ApiError(500, "test not found sorry")
     }
 
-    return res.json(testDocument);
+    await ensureTestDocumentMasterKeys(testDocument);
+
+    const matchedParameter = testDocument.parameters.find((parameter) => {
+        if (parameterId && String(parameter?._id) === String(parameterId)) {
+            return true;
+        }
+
+        return parameter?.Para_name === testName;
+    });
+
+    if (!matchedParameter) {
+        throw new ApiError(404, "parameter not found for this test")
+    }
+
+    return res.json({
+        ...testDocument.toObject(),
+        parameter: matchedParameter
+    });
 
 })
 

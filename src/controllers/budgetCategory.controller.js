@@ -107,7 +107,7 @@ const updateCategory = async (req, res) => {
         budget 
       },
       { 
-        returnDocument: 'after', 
+        new: true, 
         runValidators: true 
       }
     );

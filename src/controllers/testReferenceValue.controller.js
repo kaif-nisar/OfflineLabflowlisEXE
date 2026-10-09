@@ -52,7 +52,7 @@ const createReferenceValue = asyncHandler(async (req, res) => {
       },
     },
     {
-      returnDocument: 'after',
+      new: true,
       upsert: true,
     }
   );
@@ -86,7 +86,7 @@ const updateReferenceValue = asyncHandler(async (req, res) => {
   const record = await TestReferenceValue.findOneAndUpdate(
     { _id: id, tenantId },
     { $set: update },
-    { returnDocument: 'after' }
+    { new: true }
   );
 
   if (!record) {

@@ -187,7 +187,7 @@ const updateProduct = async (req, res) => {
         discountPrice: formattedDiscountPrice,
         updatedAt: new Date(),
       },
-      { returnDocument: 'after' }
+      { new: true }
     );
 
     if (!updatedProduct) {

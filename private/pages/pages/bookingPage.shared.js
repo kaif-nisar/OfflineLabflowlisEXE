@@ -60,6 +60,51 @@
         return Array.isArray(value) ? value : [];
     }
 
+    function getUniqueStrings(values = []) {
+        return [...new Set(
+            ensureArray(values)
+                .map((value) => String(value || '').trim())
+                .filter(Boolean)
+        )];
+    }
+
+    function normalizeSampleTypeList(value) {
+        if (Array.isArray(value)) {
+            return getUniqueStrings(value);
+        }
+
+        const text = String(value || '').trim();
+        if (!text) {
+            return [];
+        }
+
+        return getUniqueStrings(text.split(','));
+    }
+
+    function dedupeRowIds(ids = []) {
+        const seen = new Set();
+
+        return ensureArray(ids).reduce((accumulator, entry) => {
+            const entryId = toId(entry?.id);
+            const collectionName = String(entry?.collectionName || '').trim();
+            if (!entryId || !collectionName) {
+                return accumulator;
+            }
+
+            const key = `${collectionName}:${entryId}`;
+            if (seen.has(key)) {
+                return accumulator;
+            }
+
+            seen.add(key);
+            accumulator.push({
+                id: entryId,
+                collectionName,
+            });
+            return accumulator;
+        }, []);
+    }
+
     function getArrayResponse(payload) {
         if (Array.isArray(payload)) return payload;
         if (Array.isArray(payload?.message)) return payload.message;
@@ -144,6 +189,21 @@
     }
 
     function getResponseMessage(payload, fallback = '') {
+        if (typeof payload === 'string' && payload.trim()) {
+            return payload.trim();
+        }
+
+        if (Array.isArray(payload)) {
+            const listMessage = payload
+                .map((entry) => (typeof entry === 'string' ? entry : entry?.message || entry?.msg || ''))
+                .filter(Boolean)
+                .join(', ');
+
+            if (listMessage) {
+                return listMessage;
+            }
+        }
+
         const directMessage = payload?.message;
         if (typeof directMessage === 'string' && directMessage.trim()) {
             return directMessage.trim();
@@ -467,12 +527,10 @@
 
             if (refs.bookingDate && !isEditMode) {
                 refs.bookingDate.value = formatDateForInput(now);
-                refs.bookingDate.setAttribute('readonly', true);
             }
 
             if (refs.bookingTime && !isEditMode) {
                 refs.bookingTime.value = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-                refs.bookingTime.setAttribute('readonly', true);
             }
         }
 
@@ -502,7 +560,11 @@
                 itemName: item.itemName || item.testName || item.panelName || item.packageName || '',
                 shortName: item.shortName || item.Short_name || '',
                 bookingCode: Number.isFinite(Number(item.bookingCode)) ? Number(item.bookingCode) : null,
-                sampleTypes: ensureArray(item.sampleTypes || item.sampleType).filter(Boolean),
+                sampleTypes: normalizeSampleTypeList(
+                    Array.isArray(item.sampleTypes) && item.sampleTypes.length > 0
+                        ? item.sampleTypes
+                        : item.sampleType
+                ),
                 price: toNumber(item.price ?? item.basePrice ?? item.finalPrice ?? item.myPrice),
                 basePrice: toNumber(item.basePrice ?? item.catalogPrice ?? item.Price),
                 mrpPrice: toNumber(item.mrpPrice ?? item.finalPrice),
@@ -611,7 +673,8 @@
                     itemId: item.panelId || item._id,
                     collectionName: 'addPannel',
                     itemName: item.panelName || item.name || '',
-                    sampleTypes: normalizeLegacySampleTypes(item.sampleType),
+                    shortName: item.shortName || item.Short_name || item.short_name || '',
+                    sampleTypes: normalizeLegacySampleTypes(item.sampleType || item.sample_types),
                     basePrice: item.myPrice ?? item.franchiseePrice ?? item.basePrice ?? item.price ?? 0,
                     mrpPrice: item.mrpPrice ?? item.final_price ?? 0,
                     price: item.myPrice ?? item.franchiseePrice ?? item.basePrice ?? item.price ?? 0,
@@ -948,8 +1011,23 @@
             return COLLECTION_BY_TYPE[normalizeItemType(itemType)] || '';
         }
 
-        function getSelectedItemsForSave() {
-            return Array.from(state.newSelectedItems.values()).map((item) => ({
+        function getCurrentSelectedItemsMap() {
+            return new Map([
+                ...Array.from(state.lockedItems.entries()),
+                ...Array.from(state.newSelectedItems.entries()),
+            ]);
+        }
+
+        function getCurrentSelectedItems() {
+            return Array.from(getCurrentSelectedItemsMap().values());
+        }
+
+        function getCurrentSelectionSize() {
+            return state.lockedItems.size + state.newSelectedItems.size;
+        }
+
+        function getSelectedItemsForSave(items = getCurrentSelectedItems()) {
+            return items.map((item) => ({
                 itemType: item.itemType,
                 itemId: item.itemId,
                 selectedViaGroupId: item.selectedViaGroupId || null,
@@ -958,7 +1036,7 @@
         }
 
         function syncDiscountDisplay() {
-            const currentTotal = Array.from(state.newSelectedItems.values()).reduce((sum, item) => sum + toNumber(item.price), 0);
+            const currentTotal = getCurrentSelectedItems().reduce((sum, item) => sum + toNumber(item.price), 0);
             const discountValue = toNumber(refs.discountAmount?.value);
             const payableAmount = Math.max(currentTotal - discountValue, 0);
             const discountPercentage = currentTotal > 0 ? ((Math.min(discountValue, currentTotal) / currentTotal) * 100).toFixed(2) : '0.00';
@@ -1003,35 +1081,59 @@
             const previousRows = cloneItemsMap(state.rowState);
             const nextRows = new Map();
 
-            Array.from(state.newSelectedItems.values()).forEach((item) => {
-                const sampleTypes = item.sampleTypes.length > 0 ? item.sampleTypes : ['Unknown'];
+            getCurrentSelectedItems().forEach((item) => {
+                const sampleTypes = normalizeSampleTypeList(
+                    item.sampleTypes.length > 0 ? item.sampleTypes : ['Unknown']
+                );
 
                 sampleTypes.forEach((sampleType) => {
                     const normalizedSample = String(sampleType || 'Unknown').trim() || 'Unknown';
-                    const existingRow = nextRows.get(normalizedSample) || previousRows.get(normalizedSample) || {
-                        sampleType: normalizedSample,
-                        barcodeId: '',
-                        confirmBarcodeId: '',
-                        ids: [],
-                        testNames: [],
-                        readOnly: false,
-                    };
+                    let existingRow = nextRows.get(normalizedSample);
 
-                    const lockedBarcode = state.existingSampleBarcodes.get(normalizedSample);
+                    if (!existingRow) {
+                        const previousRow = previousRows.get(normalizedSample);
+                        existingRow = previousRow
+                            ? {
+                                ...previousRow,
+                                sampleType: normalizedSample,
+                                ids: [],
+                                testNames: [],
+                            }
+                            : {
+                                sampleType: normalizedSample,
+                                barcodeId: '',
+                                confirmBarcodeId: '',
+                                ids: [],
+                                testNames: [],
+                                readOnly: false,
+                            };
+                    }
+
+                    const lockedBarcode = state.existingSampleBarcodes.get(normalizedSample)
+                        || state.existingSampleBarcodes.get(normalizedSample.toLowerCase())
+                        || (state.existingSampleBarcodes.size === 1 ? Array.from(state.existingSampleBarcodes.values())[0] : '');
                     if (lockedBarcode) {
                         existingRow.barcodeId = lockedBarcode;
                         existingRow.confirmBarcodeId = lockedBarcode;
                         existingRow.readOnly = true;
                     }
 
-                    existingRow.ids = existingRow.ids || [];
-                    existingRow.testNames = existingRow.testNames || [];
+                    const collectionName = item.collectionName || getSelectedGroupItemCollection(item.itemType);
+                    const rowItemKey = `${collectionName}:${toId(item.itemId)}`;
+                    const existingRowItemKeys = new Set(
+                        ensureArray(existingRow.ids).map((entry) => `${entry?.collectionName}:${toId(entry?.id)}`)
+                    );
 
-                    existingRow.ids.push({
-                        id: item.itemId,
-                        collectionName: item.collectionName || getSelectedGroupItemCollection(item.itemType),
-                    });
-                    existingRow.testNames.push(item.itemName);
+                    if (!existingRowItemKeys.has(rowItemKey)) {
+                        existingRow.ids.push({
+                            id: item.itemId,
+                            collectionName,
+                        });
+                    }
+
+                    if (item.itemName && !existingRow.testNames.includes(item.itemName)) {
+                        existingRow.testNames.push(item.itemName);
+                    }
 
                     nextRows.set(normalizedSample, existingRow);
                 });
@@ -1103,13 +1205,46 @@
             });
         }
 
+        function scoreSearchMatch(item, query) {
+            if (!query) return 0;
+            const q = query.trim().toLowerCase();
+            const sName = String(item.shortName || '').trim().toLowerCase();
+            const iName = String(item.itemName || '').trim().toLowerCase();
+            const bCode = String(item.bookingCode || '').trim().toLowerCase();
+
+            // 1. Exact match on Short Name (Highest priority - e.g. "LIPID" matches "LIPID PROFILE (LIPID)")
+            if (sName && sName === q) return 10000;
+            // 2. Short Name starts with query (e.g. "LIP" matches "LIPID")
+            if (sName && sName.startsWith(q)) return 8000;
+            // 3. Exact booking code match
+            if (bCode && bCode === q) return 7000;
+            // 4. Short Name contains query
+            if (sName && sName.includes(q)) return 6000;
+            // 5. Exact match on full Item Name
+            if (iName === q) return 5000;
+            // 6. Item Name starts with query (e.g. "Lipid Profile" when searching "lipid")
+            if (iName.startsWith(q)) return 4000;
+            // 7. Individual word in Item Name equals query or starts with query
+            const words = iName.split(/[^a-z0-9]+/);
+            if (words.some(w => w === q)) return 3000;
+            if (words.some(w => w.startsWith(q))) return 2000;
+            // 8. Panels / Packages slight boost over individual minor parameters if matched
+            let boost = 0;
+            if (item.itemType === 'panel') boost = 150;
+            if (item.itemType === 'package') boost = 100;
+            // 9. Item Name substring match
+            if (iName.includes(q)) return 1000 + boost;
+            // 10. Default substring search match
+            return 100 + boost;
+        }
+
         function getFilteredAvailableItems(query = String(refs.availableSearch?.value || '').trim().toLowerCase()) {
             const blockedKeys = new Set([
                 ...Array.from(state.lockedItems.keys()),
                 ...Array.from(state.newSelectedItems.keys()),
             ]);
 
-            return state.catalogItems.filter((item) => {
+            const matched = state.catalogItems.filter((item) => {
                 const key = buildItemKey(item.itemType, item.itemId);
                 if (blockedKeys.has(key)) {
                     return false;
@@ -1129,11 +1264,35 @@
 
                 return searchPool.includes(query);
             });
+
+            if (!query) {
+                return matched;
+            }
+
+            // Sort matched items by Short Name & relevance priority
+            return matched.sort((a, b) => {
+                const scoreA = scoreSearchMatch(a, query);
+                const scoreB = scoreSearchMatch(b, query);
+                if (scoreB !== scoreA) {
+                    return scoreB - scoreA;
+                }
+                return String(a.itemName || '').localeCompare(String(b.itemName || ''));
+            });
         }
 
         function getFilteredSelectedItems(query = String(refs.selectedSearch?.value || '').trim().toLowerCase()) {
-            const lockedItems = Array.from(state.lockedItems.values()).map((item) => ({ ...item, isLocked: true }));
-            const newItems = Array.from(state.newSelectedItems.values()).map((item) => ({ ...item, isLocked: false }));
+            const lockedItems = Array.from(state.lockedItems.values()).map((item) => ({
+                ...item,
+                isLocked: true,
+                isExisting: true,
+                isRemovable: isEditMode,
+            }));
+            const newItems = Array.from(state.newSelectedItems.values()).map((item) => ({
+                ...item,
+                isLocked: false,
+                isExisting: false,
+                isRemovable: true,
+            }));
 
             return [...lockedItems, ...newItems].filter((item) => {
                 if (!query) return true;
@@ -1227,7 +1386,7 @@
                 return `
                     <span class="tests-name-option" data-action="select-item" data-item-key="${escapeHtml(key)}" style="justify-content:space-between;gap:10px;">
                         <span style="display:flex;flex-direction:column;">
-                            <strong>${escapeHtml(item.itemName)}</strong>
+                            <strong>${escapeHtml(item.itemName)}${item.shortName ? ` (${escapeHtml(item.shortName)})` : ''}</strong>
                             <small>${escapeHtml(item.itemType)} | ${escapeHtml(sampleText)} | ${escapeHtml(sourceLabel)}${escapeHtml(codeLabel)}</small>
                         </span>
                         <span>Rs. ${formatCurrency(item.price)}</span>
@@ -1249,20 +1408,27 @@
 
             refs.selectedList.innerHTML = selectedItems.map((item) => {
                 const key = buildItemKey(item.itemType, item.itemId);
-                const badgeText = item.isLocked
-                    ? 'Already booked'
-                    : (item.selectedViaGroupName ? item.selectedViaGroupName : 'Click to remove');
+                const badgeParts = [];
+                if (item.isExisting) {
+                    badgeParts.push('Already booked');
+                }
+                if (item.selectedViaGroupName) {
+                    badgeParts.push(item.selectedViaGroupName);
+                } else if (item.isRemovable) {
+                    badgeParts.push('Click to remove');
+                }
+                const badgeText = badgeParts.join(' | ') || 'Selected';
                 const sourceLabel = item.rateSource === 'doctor-rate-card' ? 'Doctor Price' : 'Default Price';
 
                 return `
                     <span
                         class="realSelectedTests"
-                        data-action="${item.isLocked ? 'locked-item' : 'remove-item'}"
+                        data-action="${item.isRemovable ? 'remove-item' : 'locked-item'}"
                         data-item-key="${escapeHtml(key)}"
-                        style="justify-content:space-between;gap:10px;${item.isLocked ? 'opacity:0.7;cursor:default;' : ''}"
+                        style="justify-content:space-between;gap:10px;${item.isRemovable ? '' : 'opacity:0.7;cursor:default;'}"
                     >
                         <span style="display:flex;flex-direction:column;">
-                            <strong>${escapeHtml(item.itemName || key)}</strong>
+                            <strong>${escapeHtml(item.itemName || key)}${item.shortName ? ` (${escapeHtml(item.shortName)})` : ''}</strong>
                             <small>${escapeHtml(item.itemType)} | ${escapeHtml(sourceLabel)} | ${escapeHtml(badgeText)}</small>
                         </span>
                         <span>Rs. ${formatCurrency(item.price)}</span>
@@ -1310,11 +1476,18 @@
                 const catalogItem = state.catalogMap.get(key);
                 if (!catalogItem) return;
 
-                if (!item.itemName) item.itemName = catalogItem.itemName;
-                if (!item.shortName) item.shortName = catalogItem.shortName;
-                if (!ensureArray(item.sampleTypes).length) item.sampleTypes = ensureArray(catalogItem.sampleTypes);
-                if (!item.collectionName) item.collectionName = catalogItem.collectionName;
-                if (!toNumber(item.price) && toNumber(catalogItem.price)) item.price = toNumber(catalogItem.price);
+                const catalogSampleTypes = ensureArray(catalogItem.sampleTypes).filter(Boolean);
+                const mergedSampleTypes = (item.sampleTypes && item.sampleTypes.length > 0)
+                    ? item.sampleTypes
+                    : catalogSampleTypes;
+
+                state.lockedItems.set(key, {
+                    ...item,
+                    ...catalogItem,
+                    sampleTypes: mergedSampleTypes,
+                    selectedViaGroupId: item.selectedViaGroupId || catalogItem.selectedViaGroupId || '',
+                    selectedViaGroupName: item.selectedViaGroupName || catalogItem.selectedViaGroupName || '',
+                });
             });
         }
 
@@ -1345,10 +1518,31 @@
             }
         }
 
+        function setCatalogLoadingState(isLoading) {
+            if (!refs.availableList) return;
+            if (isLoading) {
+                refs.availableList.innerHTML = `
+                    <div class="catalog-loading-buffer">
+                        <div class="catalog-buffer-spinner"></div>
+                        <span>Loading tests, panels &amp; packages...</span>
+                    </div>
+                `;
+                if (refs.groupList && state.supportsAdvancedBookingApi !== false) {
+                    refs.groupList.innerHTML = `
+                        <div class="catalog-loading-buffer">
+                            <div class="catalog-buffer-spinner"></div>
+                            <span>Loading quick groups...</span>
+                        </div>
+                    `;
+                }
+            }
+        }
+
         async function loadCatalog({ preserveSelection = true } = {}) {
             syncIdentityState();
             state.selectedDoctorId = getSelectedDoctorId() || state.selfDoctorId;
             updateDoctorField();
+            setCatalogLoadingState(true);
 
             if (getBookingCatalogApiMode() === 'legacy') {
                 const legacyData = await loadLegacyBookingCatalog();
@@ -1455,11 +1649,18 @@
         }
 
         function removeItemFromSelection(itemKey, options = {}) {
-            if (!itemKey || !state.newSelectedItems.has(itemKey)) {
+            if (!itemKey) {
                 return;
             }
 
-            state.newSelectedItems.delete(itemKey);
+            if (state.newSelectedItems.has(itemKey)) {
+                state.newSelectedItems.delete(itemKey);
+            } else if (isEditMode && state.lockedItems.has(itemKey)) {
+                state.lockedItems.delete(itemKey);
+            } else {
+                return;
+            }
+
             renderEverything();
             if (options.searchInput) {
                 resetSearchInput(options.searchInput);
@@ -1521,11 +1722,6 @@
             }
 
             const barcodeMap = new Map();
-            state.existingSampleBarcodes.forEach((barcode, sampleType) => {
-                if (barcode) {
-                    barcodeMap.set(barcode, sampleType);
-                }
-            });
 
             for (const row of state.rowState.values()) {
                 const barcode = String(row.barcodeId || '').trim();
@@ -1555,9 +1751,10 @@
 
             return Array.from(state.rowState.values()).map((row) => ({
                 typeOfSample: row.sampleType,
+                barcodeId: row.barcodeId || row.confirmBarcodeId || '',
                 confirmBarcodeId: row.confirmBarcodeId || row.barcodeId,
-                testName: Array.from(new Set(row.testNames || [])).join(', '),
-                ids: ensureArray(row.ids),
+                testName: getUniqueStrings(row.testNames).join(', '),
+                ids: dedupeRowIds(row.ids),
             }));
         }
 
@@ -1595,6 +1792,7 @@
 
         function appendCommonFormData(formData) {
             const fields = getFormCommonFields();
+            const currentSelectedItems = getCurrentSelectedItems();
             Object.entries(fields).forEach(([key, value]) => formData.append(key, value));
 
             formData.append('subFranchisee', refs.franchiseeSelect?.value || '');
@@ -1609,9 +1807,12 @@
             formData.append('savedLab', selectedLabOption?.textContent || '');
             formData.append('savedLabId', getSelectedLabId() || '');
 
-            formData.append('testIds', JSON.stringify(Array.from(state.newSelectedItems.values()).map((item) => item.itemId)));
-            formData.append('selectedItems', JSON.stringify(getSelectedItemsForSave()));
+            formData.append('testIds', JSON.stringify(currentSelectedItems.map((item) => item.itemId)));
+            formData.append('selectedItems', JSON.stringify(getSelectedItemsForSave(currentSelectedItems)));
             formData.append('tableData', JSON.stringify(buildTablePayload()));
+            if (isEditMode) {
+                formData.append('replaceExistingSelection', 'true');
+            }
 
             if (refs.fileInput?.files?.[0]) {
                 formData.append('file', refs.fileInput.files[0]);
@@ -1650,7 +1851,7 @@
                 const data = await getResponseJson(response);
 
                 if (!response.ok) {
-                    throw new Error(data.message || 'Booking save nahi ho saki');
+                    throw new Error(getResponseMessage(data, 'Booking save nahi ho saki'));
                 }
 
                 showMessage(data.message || 'Booking successfully create ho gayi.', 'success');
@@ -1675,8 +1876,8 @@
                 return;
             }
 
-            if (state.newSelectedItems.size === 0) {
-                showMessage('Edit booking me add karne ke liye kam se kam ek naya item select kariye.', 'error');
+            if (getCurrentSelectionSize() === 0) {
+                showMessage('Kam se kam ek test, panel ya package select kariye.', 'error');
                 return;
             }
 
@@ -1699,7 +1900,7 @@
                 const data = await getResponseJson(response);
 
                 if (!response.ok) {
-                    throw new Error(data.message || 'Booking update nahi ho saki');
+                    throw new Error(getResponseMessage(data, 'Booking update nahi ho saki'));
                 }
 
                 showMessage(data.message || 'Booking successfully update ho gayi.', 'success');
@@ -1724,14 +1925,35 @@
                 const barcode = row.barcodeId || row.confirmBarcodeId || '';
                 if (sampleType && barcode) {
                     state.existingSampleBarcodes.set(sampleType, barcode);
+                    state.existingSampleBarcodes.set(sampleType.toLowerCase(), barcode);
                 }
             });
 
             if (ensureArray(booking?.selectedItems).length > 0) {
+                const itemSampleFromTable = new Map();
+                ensureArray(booking?.tableData).forEach((row) => {
+                    const st = String(row.typeOfSample || '').trim();
+                    if (!st) return;
+                    ensureArray(row.ids).forEach((entry) => {
+                        const iId = toId(entry.id);
+                        if (iId) {
+                            if (!itemSampleFromTable.has(iId)) {
+                                itemSampleFromTable.set(iId, new Set());
+                            }
+                            itemSampleFromTable.get(iId).add(st);
+                        }
+                    });
+                });
+
                 booking.selectedItems.forEach((item) => {
                     const itemType = normalizeItemType(item.itemType || item.collectionName);
                     const itemId = toId(item.itemId || item.id);
                     if (!itemType || !itemId) return;
+
+                    let sampleTypes = ensureArray(item.sampleTypes).map(s => String(s).trim()).filter(Boolean);
+                    if (sampleTypes.length === 0 && itemSampleFromTable.has(itemId)) {
+                        sampleTypes = Array.from(itemSampleFromTable.get(itemId));
+                    }
 
                     const key = buildItemKey(itemType, itemId);
                     state.lockedItems.set(key, {
@@ -1740,7 +1962,7 @@
                         collectionName: item.collectionName || COLLECTION_BY_TYPE[itemType],
                         itemName: item.itemName || '',
                         shortName: item.shortName || '',
-                        sampleTypes: ensureArray(item.sampleTypes),
+                        sampleTypes: sampleTypes,
                         price: toNumber(item.price),
                         selectedViaGroupId: toId(item.selectedViaGroupId),
                         selectedViaGroupName: item.selectedViaGroupName || '',
@@ -1798,10 +2020,14 @@
             const urlParams = new URLSearchParams(window.location.search);
             const storedRegId = safeJsonParse(localStorage.getItem('regId') || 'null', null);
             const storedBooking = safeJsonParse(localStorage.getItem('booking') || 'null', null);
+            const sessionRegId = safeJsonParse(sessionStorage.getItem('regId') || 'null', null);
+            const sessionBooking = safeJsonParse(sessionStorage.getItem('booking') || 'null', null);
             const bookingId = urlParams.get('id')
                 || urlParams.get('value1')
                 || urlParams.get('Name')
+                || sessionRegId
                 || storedRegId
+                || sessionBooking?.bookingId
                 || storedBooking?.bookingId;
 
             if (!bookingId) {
@@ -1810,6 +2036,7 @@
 
             const response = await fetch(`${BASE}/api/v1/user/getbooking`, {
                 method: 'POST',
+                credentials: 'include',
                 headers: {
                     'Content-Type': 'application/json',
                 },
@@ -1818,7 +2045,7 @@
 
             const payload = await getResponseJson(response);
             if (!response.ok) {
-                throw new Error(payload.message || 'Booking load nahi ho saki');
+                throw new Error(getResponseMessage(payload, 'Booking load nahi ho saki'));
             }
 
             const booking = payload.data || payload;
@@ -1836,6 +2063,7 @@
             if (refs.clinicalHistory) refs.clinicalHistory.value = booking.clinicalHistory || '';
             if (refs.doctorName) refs.doctorName.value = booking.doctorName || booking.savedDoctor || '';
             if (refs.labName) refs.labName.value = booking.labName || booking.savedLab || '';
+            if (refs.discountAmount) refs.discountAmount.value = toNumber(booking.discountamount) > 0 ? String(toNumber(booking.discountamount)) : '';
 
             const ageParts = parseAgeParts(booking.year);
             if (refs.ageValue) refs.ageValue.value = ageParts.ageValue;
@@ -1846,7 +2074,10 @@
         }
 
         async function loadLastBooking() {
-            const response = await fetch(`${BASE}/api/v1/user/last-booking`, { method: 'POST' });
+            const response = await fetch(`${BASE}/api/v1/user/last-booking`, {
+                method: 'POST',
+                credentials: 'include',
+            });
             const data = await getResponseJson(response);
 
             if (!response.ok || data?.status === 'empty') {
@@ -1910,6 +2141,8 @@
                     refs.franchiseeSelect.value = matchingOption.value;
                 }
             }
+
+            state.bookingUserId = getSelectedFranchiseeId() || toId(state.booking?.createdBy) || state.rootUserId || state.bookingUserId;
         }
 
         function resetDoctorForm() {
@@ -2210,7 +2443,7 @@
             const data = await getResponseJson(response);
 
             if (!response.ok) {
-                throw new Error(data.message || 'Barcode update nahi ho saki');
+                throw new Error(getResponseMessage(data, 'Barcode update nahi ho saki'));
             }
 
             state.booking.tableData = tableData;
@@ -2273,7 +2506,7 @@
 
                 event.preventDefault();
                 const firstItem = getFilteredSelectedItems(String(refs.selectedSearch?.value || '').trim().toLowerCase())
-                    .find((item) => !item.isLocked);
+                    .find((item) => item.isRemovable);
                 if (!firstItem) return;
 
                 removeItemFromSelection(buildItemKey(firstItem.itemType, firstItem.itemId), { searchInput: refs.selectedSearch });
@@ -2373,6 +2606,75 @@
                     showMessage(error.message || 'Quick group save nahi ho paya.', 'error');
                 }
             });
+
+            setupEnterKeyNavigation();
+        }
+
+        function setupEnterKeyNavigation() {
+            if (state.enterKeyNavBound) return;
+            state.enterKeyNavBound = true;
+
+            document.addEventListener('keydown', (event) => {
+                if (event.key !== 'Enter') return;
+
+                const target = event.target;
+                if (!target) return;
+
+                const tagName = target.tagName ? target.tagName.toUpperCase() : '';
+                if (tagName !== 'INPUT' && tagName !== 'SELECT' && tagName !== 'TEXTAREA') {
+                    return;
+                }
+
+                if (tagName === 'TEXTAREA' && event.shiftKey) {
+                    return;
+                }
+
+                if (target.id === 'selectTestDivforSearch') {
+                    const rawQuery = String(target.value || '').trim();
+                    if (rawQuery.length > 0 && parseQuickCodeInput(rawQuery).length > 0) {
+                        return;
+                    }
+                }
+
+                const activeModal = target.closest('.modal.active, .modal2-overlay[style*="flex"], .modal2-overlay.active');
+                const root = activeModal || document.querySelector('.container') || document.body;
+
+                const selector = [
+                    'input:not([type="hidden"]):not([type="button"]):not([type="submit"]):not([disabled]):not([readonly])',
+                    'select:not([disabled]):not([readonly])',
+                    'textarea:not([disabled]):not([readonly])',
+                    '#submit-btn:not([disabled])',
+                ].join(', ');
+
+                const focusable = Array.from(root.querySelectorAll(selector)).filter((el) => {
+                    return el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0;
+                });
+
+                const index = focusable.indexOf(target);
+                if (index === -1) return;
+
+                event.preventDefault();
+
+                if (event.shiftKey) {
+                    const prev = focusable[index - 1];
+                    if (prev) {
+                        prev.focus();
+                        if (typeof prev.select === 'function' && prev.type !== 'date' && prev.type !== 'time') {
+                            prev.select();
+                        }
+                    }
+                } else {
+                    const next = focusable[index + 1];
+                    if (next) {
+                        next.focus();
+                        if (typeof next.select === 'function' && next.type !== 'date' && next.type !== 'time') {
+                            next.select();
+                        }
+                    } else if (refs.submitBtn && !refs.submitBtn.disabled) {
+                        refs.submitBtn.focus();
+                    }
+                }
+            });
         }
 
         function bindEditModeEvents() {
@@ -2448,7 +2750,7 @@
 
         try {
             hideMessage();
-            setLoading(true);
+            setLoading(false);
             bindCoreEvents();
             bindNewModeEvents();
             bindEditModeEvents();

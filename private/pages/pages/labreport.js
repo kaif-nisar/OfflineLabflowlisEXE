@@ -44,6 +44,1742 @@ async function loadfunction() {
 
     window.showStatusMessage = showStatusMessage;
 
+    const deviceLockState = window.__labflowDeviceLockState || (window.__labflowDeviceLockState = {
+        active: false,
+        overlay: null,
+        observer: null,
+        speechPlayed: false,
+        fetchWrapped: false,
+    });
+
+    const DEVICE_LOCK_QR_PLACEHOLDER =
+        "UPI QR / GPay QR will appear here";
+    const DEVICE_LOCK_MESSAGE = {
+        englishTitle: "ACCESS DENIED! DEVICE LIMIT REACHED",
+        englishBody:
+            "Your account is already active and running on another computer/laptop. As per your single-institute plan, concurrent login is restricted.",
+        englishUpgrade:
+            "UPGRADE YOUR PLAN NOW: Run LabFlowLIS on multiple devices simultaneously for just ₹299/Month per extra device!",
+        englishSteps:
+            "How to unlock instantly: Scan the QR Code below, make the payment of ₹299, and click the WhatsApp button to send us the screenshot. We will activate your extra device within 2 minutes!",
+        hindiTitle:
+            "सॉफ्टवेयर ब्लॉक कर दिया गया है! डिवाइस की सीमा समाप्त",
+        hindiBody:
+            "आपका अकाउंट पहले से ही किसी दूसरे कंप्यूटर या मोबाइल पर चल रहा है। नियम के अनुसार, यह प्लान केवल एक ही लैब/संस्थान के उपयोग के लिए है।",
+        hindiUpgrade:
+            "तुरंत नया प्लान लें: एक साथ कई कंप्यूटरों पर सॉफ्टवेयर चलाने के लिए अभी अपना प्लान बदलें, मात्र ₹299/महीना प्रति अतिरिक्त कंप्यूटर!",
+        hindiSteps:
+            "चालू करने का आसान तरीका: नीचे दिए गए QR कोड को स्कैन करके ₹299 का भुगतान करें, और WhatsApp बटन पर क्लिक करके पेमेंट का स्क्रीनशॉट भेजें। हम 2 मिनट में आपका दूसरा कंप्यूटर चालू कर देंगे!",
+        speech:
+            "सावधान! आपकी डिवाइस सीमा समाप्त हो चुकी है। यह सॉफ्टवेयर पहले से ही किसी और कंप्यूटर पर एक्टिव है। अगर आप इसे इस कंप्यूटर पर भी एक साथ चलाना चाहते हैं, तो स्क्रीन पर दिए गए क्यूआर कोड पर दो सौ निन्यानबे रुपये का भुगतान करें, और स्क्रीनशॉट व्हाट्सऐप पर भेजकर इसे तुरंत चालू करवाएं।",
+    };
+
+    function injectDeviceLockStyles() {
+        if (document.getElementById("labflow-device-lock-styles")) {
+            return;
+        }
+
+        const style = document.createElement("style");
+        style.id = "labflow-device-lock-styles";
+        style.textContent = `
+            #labflow-device-lock-overlay {
+                position: fixed;
+                inset: 0;
+                z-index: 2147483647;
+                display: none;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+                background: radial-gradient(circle at top, rgba(255, 201, 61, 0.22), rgba(0, 0, 0, 0.92) 58%);
+                backdrop-filter: blur(8px);
+                -webkit-backdrop-filter: blur(8px);
+                color: #fff;
+            }
+
+            #labflow-device-lock-overlay .device-lock-shell {
+                width: min(1040px, 100%);
+                max-height: calc(100vh - 32px);
+                overflow: auto;
+                border: 3px solid #ffeb3b;
+                border-radius: 28px;
+                background: linear-gradient(180deg, rgba(142, 16, 12, 0.98) 0%, rgba(30, 10, 8, 0.98) 100%);
+                box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
+                padding: 22px;
+            }
+
+            #labflow-device-lock-overlay .device-lock-banner {
+                display: grid;
+                grid-template-columns: 1.3fr 1fr;
+                gap: 18px;
+                align-items: stretch;
+            }
+
+            #labflow-device-lock-overlay .device-lock-headline {
+                padding: 24px;
+                border-radius: 22px;
+                background: linear-gradient(135deg, #ff1f1f 0%, #b81c1c 52%, #ffcf33 100%);
+                color: #111;
+                text-transform: uppercase;
+                border: 2px solid rgba(255, 255, 255, 0.22);
+                box-shadow: inset 0 1px 0 rgba(255,255,255,0.35);
+            }
+
+            #labflow-device-lock-overlay .device-lock-headline h1 {
+                margin: 0;
+                font-size: clamp(2rem, 4.5vw, 4rem);
+                line-height: 0.95;
+                font-weight: 900;
+                letter-spacing: 0.04em;
+            }
+
+            #labflow-device-lock-overlay .device-lock-headline p {
+                margin: 14px 0 0;
+                font-size: 1rem;
+                font-weight: 800;
+            }
+
+            #labflow-device-lock-overlay .device-lock-column {
+                display: grid;
+                gap: 14px;
+            }
+
+            #labflow-device-lock-overlay .device-lock-card {
+                border-radius: 22px;
+                padding: 18px;
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+            }
+
+            #labflow-device-lock-overlay .device-lock-card h2 {
+                margin: 0 0 8px;
+                font-size: clamp(1.45rem, 2.8vw, 2.25rem);
+                line-height: 1.05;
+                font-weight: 900;
+                color: #fffbea;
+            }
+
+            #labflow-device-lock-overlay .device-lock-card p,
+            #labflow-device-lock-overlay .device-lock-card li {
+                margin: 0;
+                font-size: 1rem;
+                line-height: 1.55;
+                color: #fff;
+                font-weight: 600;
+            }
+
+            #labflow-device-lock-overlay .device-lock-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 16px;
+                margin-top: 16px;
+            }
+
+            #labflow-device-lock-overlay .device-lock-qr {
+                min-height: 220px;
+                border-radius: 22px;
+                border: 2px dashed rgba(255, 235, 59, 0.88);
+                background: rgba(0, 0, 0, 0.25);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                text-align: center;
+                padding: 18px;
+                font-weight: 900;
+                color: #fff7a6;
+            }
+
+            #labflow-device-lock-overlay .device-lock-qr img {
+                width: 100%;
+                max-width: 280px;
+                height: auto;
+                display: block;
+                border-radius: 14px;
+                background: #fff;
+                padding: 8px;
+            }
+
+            #labflow-device-lock-overlay .device-lock-whatsapp {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 100%;
+                padding: 16px 18px;
+                margin-top: 14px;
+                border-radius: 999px;
+                background: linear-gradient(135deg, #2dd54c 0%, #128c7e 100%);
+                color: #fff;
+                font-size: 1rem;
+                font-weight: 900;
+                text-decoration: none;
+                text-align: center;
+                box-shadow: 0 16px 30px rgba(18, 140, 126, 0.4);
+                animation: deviceLockPulse 1.7s ease-in-out infinite;
+            }
+
+            #labflow-device-lock-overlay .device-lock-note {
+                margin-top: 12px;
+                padding: 12px 14px;
+                border-radius: 14px;
+                background: rgba(255, 255, 255, 0.1);
+                color: #fff;
+                font-weight: 700;
+            }
+
+            @keyframes deviceLockPulse {
+                0%, 100% { transform: scale(1); }
+                50% { transform: scale(1.02); }
+            }
+
+            @media (max-width: 860px) {
+                #labflow-device-lock-overlay .device-lock-banner,
+                #labflow-device-lock-overlay .device-lock-grid {
+                    grid-template-columns: 1fr;
+                }
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function getDeviceLockWhatsAppNumber() {
+        return String(
+            window.LABFLOW_DEVICE_LOCK_WHATSAPP_NUMBER ||
+            window.DEVICE_LOCK_WHATSAPP_NUMBER ||
+            "919999999999"
+        ).replace(/\D/g, "");
+    }
+
+    function getDeviceLockUserId() {
+        return String(
+            window.user?._id ||
+            window.userId ||
+            localStorage.getItem("userId") ||
+            ""
+        ).trim();
+    }
+
+    function buildDeviceLockWhatsAppLink() {
+        const number = getDeviceLockWhatsAppNumber();
+        const userId = getDeviceLockUserId() || "UNKNOWN";
+        const message =
+            `Hello Admin, I have paid Rs.299 to add an extra device. Please approve. My User ID: ${userId}`;
+        return `https://wa.me/${number}?text=${encodeURIComponent(message)}`;
+    }
+
+    function ensureDeviceLockOverlay() {
+        injectDeviceLockStyles();
+
+        if (deviceLockState.overlay && document.body.contains(deviceLockState.overlay)) {
+            return deviceLockState.overlay;
+        }
+
+        const overlay = document.createElement("div");
+        overlay.id = "labflow-device-lock-overlay";
+        overlay.innerHTML = `
+            <div class="device-lock-shell" role="dialog" aria-modal="true" aria-labelledby="deviceLockTitle">
+                <div class="device-lock-banner">
+                    <div class="device-lock-headline">
+                        <h1 id="deviceLockTitle">${DEVICE_LOCK_MESSAGE.englishTitle}</h1>
+                        <p>${DEVICE_LOCK_MESSAGE.englishBody}</p>
+                        <p>${DEVICE_LOCK_MESSAGE.englishUpgrade}</p>
+                        <p>${DEVICE_LOCK_MESSAGE.englishSteps}</p>
+                    </div>
+                    <div class="device-lock-card">
+                        <h2>हिंदी / Hindi</h2>
+                        <p>${DEVICE_LOCK_MESSAGE.hindiTitle}</p>
+                        <p style="margin-top: 10px;">${DEVICE_LOCK_MESSAGE.hindiBody}</p>
+                        <p style="margin-top: 10px;">${DEVICE_LOCK_MESSAGE.hindiUpgrade}</p>
+                        <p style="margin-top: 10px;">${DEVICE_LOCK_MESSAGE.hindiSteps}</p>
+                    </div>
+                </div>
+
+                <div class="device-lock-grid">
+                    <div class="device-lock-card">
+                        <h2>Payment QR Code</h2>
+                        <div class="device-lock-qr" data-device-lock-qr>${DEVICE_LOCK_QR_PLACEHOLDER}</div>
+                    </div>
+
+                    <div class="device-lock-card">
+                        <h2>WhatsApp Approval</h2>
+                        <p>Send the payment screenshot here and we will enable the extra device fast.</p>
+                        <a class="device-lock-whatsapp" data-device-lock-whatsapp target="_blank" rel="noreferrer noopener">
+                            WhatsApp पर स्क्रीनशॉट भेजें और चालू करवाएं
+                        </a>
+                        <div class="device-lock-note">
+                            If the screen stays blocked, refresh is not enough. Please complete the payment or contact the admin.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        const qrSlot = overlay.querySelector("[data-device-lock-qr]");
+        const qrImageUrl =
+            window.LABFLOW_DEVICE_LOCK_QR_IMAGE_URL ||
+            window.DEVICE_LOCK_QR_IMAGE_URL ||
+            "";
+
+        if (qrImageUrl) {
+            qrSlot.innerHTML = `<img src="${qrImageUrl}" alt="Device unlock QR code" />`;
+        }
+
+        const waButton = overlay.querySelector("[data-device-lock-whatsapp]");
+        waButton.href = buildDeviceLockWhatsAppLink();
+
+        document.body.appendChild(overlay);
+        deviceLockState.overlay = overlay;
+        return overlay;
+    }
+
+    function speakDeviceLockMessage() {
+        if (deviceLockState.speechPlayed || !("speechSynthesis" in window)) {
+            return;
+        }
+
+        deviceLockState.speechPlayed = true;
+        const utterance = new SpeechSynthesisUtterance(DEVICE_LOCK_MESSAGE.speech);
+        utterance.lang = "hi-IN";
+        utterance.rate = 0.88;
+        utterance.pitch = 1;
+        utterance.volume = 1;
+
+        const speakNow = () => {
+            const voices = window.speechSynthesis.getVoices() || [];
+            const preferredVoice =
+                voices.find((voice) => String(voice.lang || "").toLowerCase() === "hi-in") ||
+                voices.find((voice) => /hindi/i.test(String(voice.name || voice.lang || ""))) ||
+                voices.find((voice) => String(voice.lang || "").toLowerCase().startsWith("hi"));
+
+            if (preferredVoice) {
+                utterance.voice = preferredVoice;
+            }
+
+            try {
+                window.speechSynthesis.cancel();
+                window.speechSynthesis.speak(utterance);
+            } catch (error) {
+                console.warn("Device lock speech could not start", error);
+            }
+        };
+
+        if (window.speechSynthesis.getVoices().length > 0) {
+            speakNow();
+        } else {
+            window.speechSynthesis.addEventListener("voiceschanged", speakNow, { once: true });
+            window.setTimeout(speakNow, 300);
+        }
+    }
+
+    function keepDeviceLockOverlayAlive() {
+        if (deviceLockState.observer || !document.body) {
+            return;
+        }
+
+        deviceLockState.observer = new MutationObserver(() => {
+            if (!deviceLockState.active) {
+                return;
+            }
+
+            const overlay = ensureDeviceLockOverlay();
+            if (!document.body.contains(overlay)) {
+                document.body.appendChild(overlay);
+            }
+
+            document.documentElement.style.overflow = "hidden";
+            document.body.style.overflow = "hidden";
+            document.body.style.pointerEvents = "none";
+            overlay.style.display = "flex";
+            overlay.style.pointerEvents = "auto";
+        });
+
+        deviceLockState.observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+        });
+    }
+
+    function clearStoredAuthTokens() {
+        const keys = ["token", "accessToken", "refreshToken"];
+        for (const key of keys) {
+            try {
+                localStorage.removeItem(key);
+                sessionStorage.removeItem(key);
+            } catch (error) {
+                console.warn("Failed to clear stored auth token", key, error);
+            }
+        }
+    }
+
+    function activateDeviceLockOverlay(reason = "SESSION_INVALIDATED") {
+        deviceLockState.active = true;
+        clearStoredAuthTokens();
+        const overlay = ensureDeviceLockOverlay();
+        const headline = overlay.querySelector("#deviceLockTitle");
+        const note = overlay.querySelector(".device-lock-note");
+
+        if (headline) {
+            headline.textContent =
+                reason === "DEVICE_LIMIT_EXCEEDED"
+                    ? DEVICE_LOCK_MESSAGE.englishTitle
+                    : "SESSION LOST! PLEASE LOGIN AGAIN";
+        }
+
+        if (note && reason !== "DEVICE_LIMIT_EXCEEDED") {
+            note.textContent =
+                "Your current session was removed or expired on another device. Please sign in again to continue.";
+        }
+
+        document.documentElement.style.overflow = "hidden";
+        document.body.style.overflow = "hidden";
+        document.body.style.pointerEvents = "none";
+        overlay.style.display = "flex";
+        overlay.style.pointerEvents = "auto";
+
+        keepDeviceLockOverlayAlive();
+        speakDeviceLockMessage();
+    }
+
+    async function inspectDeviceLockResponse(response) {
+        if (!response || ![401, 403].includes(response.status)) {
+            return null;
+        }
+
+        let payload = {};
+        try {
+            payload = await response.clone().json();
+        } catch (jsonError) {
+            try {
+                const text = await response.clone().text();
+                payload = { message: text };
+            } catch (textError) {
+                payload = {};
+            }
+        }
+
+        const errorCode = String(
+            payload?.error || payload?.code || payload?.message || ""
+        ).trim().toUpperCase();
+
+        if (response.status === 403 && errorCode === "DEVICE_LIMIT_EXCEEDED") {
+            return "DEVICE_LIMIT_EXCEEDED";
+        }
+
+        if (
+            response.status === 401 ||
+            errorCode === "DEVICE_SESSION_INVALIDATED" ||
+            errorCode === "SESSION_INVALIDATED"
+        ) {
+            return "SESSION_INVALIDATED";
+        }
+
+        return null;
+    }
+
+    function installDeviceLockFetchGuard() {
+        if (deviceLockState.fetchWrapped || typeof window.fetch !== "function") {
+            return;
+        }
+
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = async function deviceLockAwareFetch(input, init) {
+            const response = await originalFetch(input, init);
+            const lockReason = await inspectDeviceLockResponse(response);
+            if (lockReason) {
+                activateDeviceLockOverlay(lockReason);
+            }
+            return response;
+        };
+
+        deviceLockState.fetchWrapped = true;
+    }
+
+    installDeviceLockFetchGuard();
+
+    const DIFFERENTIAL_PERCENTAGE_FIELD_NAMES = [
+        "Neutrophils Percentage",
+        "Monocytes Percentage",
+        "Lymphocytes Percentage",
+        "Eosinophils Percentage",
+        "Basophils Percentage",
+    ];
+    const DIFFERENTIAL_PERCENTAGE_FIELD_ALIASES = {
+        "Neutrophils Percentage": ["Neutrophils Percentage"],
+        "Monocytes Percentage": ["Monocytes Percentage"],
+        "Lymphocytes Percentage": ["Lymphocytes Percentage", "Lymphocyte Percentage"],
+        "Eosinophils Percentage": ["Eosinophils Percentage"],
+        "Basophils Percentage": ["Basophils Percentage"],
+    };
+    const DIFFERENTIAL_TOTAL_TARGET = 100;
+    const DIFFERENTIAL_TOTAL_TOLERANCE = 0.01;
+    const FORMULA_FUNCTIONS = {
+        abs: (...values) => Math.abs(values[0]),
+        ceil: (...values) => Math.ceil(values[0]),
+        floor: (...values) => Math.floor(values[0]),
+        max: (...values) => Math.max(...values),
+        min: (...values) => Math.min(...values),
+        pow: (...values) => Math.pow(values[0], values[1]),
+        round: (...values) => {
+            const number = Number(values[0] || 0);
+            const precision = Number.isFinite(values[1]) ? values[1] : 0;
+            const scale = 10 ** precision;
+            return Math.round(number * scale) / scale;
+        },
+    };
+    const formulaState = {
+        formulas: [],
+        formulaByTargetMasterKey: new Map(),
+        dependentsBySourceMasterKey: new Map(),
+        inputByMasterKey: new Map(),
+    };
+    const LEGACY_FORMULA_CONFIGS = [
+        {
+            targetNames: [
+                "Hematocrit (HCT)",
+                "Hematocrit",
+                "PACKED CELL VOLUME (PCV)",
+                "PCV",
+                "HCT",
+                "Hematocrit (COMPLETE BLOOD COUNT (CBC))",
+            ],
+            displayExpression: "Hemoglobin * 3",
+            expressionTemplate: "{{hemoglobin}} * 3",
+            dependencies: {
+                hemoglobin: ["Hemoglobin", "HAEMOGLOBIN (HB)", "HEMOGLOBIN (HB)", "HB", "Hemoglobin (COMPLETE BLOOD COUNT (CBC))"],
+            },
+        },
+        {
+            targetNames: [
+                "Neutrophils-Absolute Count",
+                "Neutrophils (Abs)",
+                "Neutrophils (Abs) (COMPLETE BLOOD COUNT (CBC))",
+                "Absolute Neutrophil Count",
+                "ANC",
+            ],
+            displayExpression: "(Total Leucocytes Count / 100) * Neutrophils Percentage",
+            expressionTemplate: "({{tlc}} / 100) * {{neutrophilsPercentage}}",
+            dependencies: {
+                tlc: ["Total Leucocytes Count", "TOTAL COUNT (WBC)", "TLC", "TOTAL COUNT (WBC) (COMPLETE BLOOD COUNT (CBC))"],
+                neutrophilsPercentage: ["Neutrophils Percentage", "Neutrophils (%)", "Neutrophils", "Neutrophils (%) (COMPLETE BLOOD COUNT (CBC))"],
+            },
+        },
+        {
+            targetNames: [
+                "Lymphocytes-Absolute Count",
+                "Lymphocytes (Abs)",
+                "Lymphocytes (Abs) (COMPLETE BLOOD COUNT (CBC))",
+                "Absolute Lymphocyte Count",
+                "ALC",
+            ],
+            displayExpression: "(Lymphocyte Percentage / 100) * Total Leucocytes Count",
+            expressionTemplate: "({{lymphocytePercentage}} / 100) * {{tlc}}",
+            dependencies: {
+                lymphocytePercentage: ["Lymphocyte Percentage", "Lymphocytes Percentage", "Lymphocytes (%)", "Lymphocytes", "Lymphocytes (%) (COMPLETE BLOOD COUNT (CBC))"],
+                tlc: ["Total Leucocytes Count", "TOTAL COUNT (WBC)", "TLC", "TOTAL COUNT (WBC) (COMPLETE BLOOD COUNT (CBC))"],
+            },
+        },
+        {
+            targetNames: [
+                "Eosinophil-Absolute Count",
+                "Eosinophils-Absolute Count",
+                "Eosinophils (Abs)",
+                "Eosinophils (Abs) (COMPLETE BLOOD COUNT (CBC))",
+                "Absolute Eosinophil Count",
+                "AEC",
+            ],
+            displayExpression: "(Eosinophils Percentage / 100) * Total Leucocytes Count",
+            expressionTemplate: "({{eosinophilsPercentage}} / 100) * {{tlc}}",
+            dependencies: {
+                eosinophilsPercentage: ["Eosinophils Percentage", "Eosinophil Percentage", "Eosinophils (%)", "Eosinophils", "Eosinophils (%) (COMPLETE BLOOD COUNT (CBC))"],
+                tlc: ["Total Leucocytes Count", "TOTAL COUNT (WBC)", "TLC", "TOTAL COUNT (WBC) (COMPLETE BLOOD COUNT (CBC))"],
+            },
+        },
+        {
+            targetNames: [
+                "Monocyte- Absolute Count",
+                "Monocyte-Absolute Count",
+                "Monocytes (Abs)",
+                "Monocytes (Abs) (COMPLETE BLOOD COUNT (CBC))",
+                "Absolute Monocyte Count",
+                "AMC",
+            ],
+            displayExpression: "(Monocytes Percentage / 100) * Total Leucocytes Count",
+            expressionTemplate: "({{monocytesPercentage}} / 100) * {{tlc}}",
+            dependencies: {
+                monocytesPercentage: ["Monocytes Percentage", "Monocyte Percentage", "Monocytes (%)", "Monocytes", "Monocytes (%) (COMPLETE BLOOD COUNT (CBC))"],
+                tlc: ["Total Leucocytes Count", "TOTAL COUNT (WBC)", "TLC", "TOTAL COUNT (WBC) (COMPLETE BLOOD COUNT (CBC))"],
+            },
+        },
+        {
+            targetNames: [
+                "Basophils-Absolute Count",
+                "Basophils (Abs)",
+                "Basophils (Abs) (COMPLETE BLOOD COUNT (CBC))",
+                "Absolute Basophil Count",
+                "ABC",
+            ],
+            displayExpression: "(Basophils Percentage / 100) * Total Leucocytes Count",
+            expressionTemplate: "({{basophilsPercentage}} / 100) * {{tlc}}",
+            dependencies: {
+                basophilsPercentage: ["Basophils Percentage", "Basophil Percentage", "Basophils (%)", "Basophils", "Basophils (%) (COMPLETE BLOOD COUNT (CBC))"],
+                tlc: ["Total Leucocytes Count", "TOTAL COUNT (WBC)", "TLC", "TOTAL COUNT (WBC) (COMPLETE BLOOD COUNT (CBC))"],
+            },
+        },
+        {
+            targetNames: ["Neutrophil Lymphocyte Ratio", "NLR"],
+            displayExpression: "Neutrophils-Absolute Count / Lymphocytes-Absolute Count",
+            expressionTemplate: "{{neutrophilsAbsolute}} / {{lymphocytesAbsolute}}",
+            dependencies: {
+                neutrophilsAbsolute: ["Neutrophils-Absolute Count", "Neutrophils (Abs)", "Neutrophils Percentage", "Neutrophils (%)"],
+                lymphocytesAbsolute: ["Lymphocytes-Absolute Count", "Lymphocytes (Abs)", "Lymphocyte Percentage", "Lymphocytes (%)"],
+            },
+        },
+        {
+            targetNames: [
+                "Mean Corpuscular Volume (MCV)",
+                "MCV",
+                "MCV (COMPLETE BLOOD COUNT (CBC))",
+            ],
+            displayExpression: "Hematocrit (HCT) * 10 / Total Red Blood Cell Count",
+            expressionTemplate: "({{hct}} * 10) / {{rbcCount}}",
+            dependencies: {
+                hct: ["Hematocrit (HCT)", "Hematocrit", "PACKED CELL VOLUME (PCV)", "PCV", "HCT", "Hematocrit (COMPLETE BLOOD COUNT (CBC))"],
+                rbcCount: ["Total Red Blood Cell Count", "RBC COUNT", "RBC", "RBC Count (COMPLETE BLOOD COUNT (CBC))"],
+            },
+        },
+        {
+            targetNames: [
+                "Mean Corpuscular Hemoglobin (MCH)",
+                "MCH",
+                "MCH (COMPLETE BLOOD COUNT (CBC))",
+            ],
+            displayExpression: "Hemoglobin * 10 / Total Red Blood Cell Count",
+            expressionTemplate: "({{hemoglobin}} * 10) / {{rbcCount}}",
+            dependencies: {
+                hemoglobin: ["Hemoglobin", "HAEMOGLOBIN (HB)", "HEMOGLOBIN (HB)", "HB", "Hemoglobin (COMPLETE BLOOD COUNT (CBC))"],
+                rbcCount: ["Total Red Blood Cell Count", "RBC COUNT", "RBC", "RBC Count (COMPLETE BLOOD COUNT (CBC))"],
+            },
+        },
+        {
+            targetNames: [
+                "Mean Corpuscular Hemoglobin Concentration (MCHC)",
+                "MCHC",
+                "MCHC (COMPLETE BLOOD COUNT (CBC))",
+            ],
+            displayExpression: "Hemoglobin * 100 / Hematocrit (HCT)",
+            expressionTemplate: "({{hemoglobin}} * 100) / {{hct}}",
+            dependencies: {
+                hemoglobin: ["Hemoglobin", "HAEMOGLOBIN (HB)", "HEMOGLOBIN (HB)", "HB", "Hemoglobin (COMPLETE BLOOD COUNT (CBC))"],
+                hct: ["Hematocrit (HCT)", "Hematocrit", "PACKED CELL VOLUME (PCV)", "PCV", "HCT", "Hematocrit (COMPLETE BLOOD COUNT (CBC))"],
+            },
+        },
+        {
+            targetNames: ["VLDL Cholesterol"],
+            displayExpression: "Triglycerides / 5",
+            expressionTemplate: "{{triglycerides}} / 5",
+            dependencies: {
+                triglycerides: ["Triglycerides"],
+            },
+        },
+        {
+            targetNames: ["LDL Cholesterol"],
+            displayExpression: "Total Cholesterol - HDL Cholesterol - VLDL Cholesterol",
+            expressionTemplate: "{{totalCholesterol}} - {{hdlCholesterol}} - {{vldlCholesterol}}",
+            dependencies: {
+                totalCholesterol: ["Total Cholesterol"],
+                hdlCholesterol: ["HDL Cholesterol"],
+                vldlCholesterol: ["VLDL Cholesterol"],
+            },
+        },
+        {
+            targetNames: ["LDL / HDL Ratio"],
+            displayExpression: "LDL Cholesterol / HDL Cholesterol",
+            expressionTemplate: "{{ldlCholesterol}} / {{hdlCholesterol}}",
+            dependencies: {
+                ldlCholesterol: ["LDL Cholesterol"],
+                hdlCholesterol: ["HDL Cholesterol"],
+            },
+        },
+        {
+            targetNames: ["Total Cholesterol / HDL"],
+            displayExpression: "Total Cholesterol / HDL Cholesterol",
+            expressionTemplate: "{{totalCholesterol}} / {{hdlCholesterol}}",
+            dependencies: {
+                totalCholesterol: ["Total Cholesterol"],
+                hdlCholesterol: ["HDL Cholesterol"],
+            },
+        },
+        {
+            targetNames: ["TG / HDL"],
+            displayExpression: "Triglycerides / HDL Cholesterol",
+            expressionTemplate: "{{triglycerides}} / {{hdlCholesterol}}",
+            dependencies: {
+                triglycerides: ["Triglycerides"],
+                hdlCholesterol: ["HDL Cholesterol"],
+            },
+        },
+        {
+            targetNames: ["Non-HDL cholesterol"],
+            displayExpression: "Total Cholesterol - HDL Cholesterol",
+            expressionTemplate: "{{totalCholesterol}} - {{hdlCholesterol}}",
+            dependencies: {
+                totalCholesterol: ["Total Cholesterol"],
+                hdlCholesterol: ["HDL Cholesterol"],
+            },
+        },
+        {
+            targetNames: ["Serum Bilirubin (Indirect)"],
+            displayExpression: "Serum Bilirubin (Total) - Serum Bilirubin (Direct)",
+            expressionTemplate: "{{bilirubinTotal}} - {{bilirubinDirect}}",
+            dependencies: {
+                bilirubinTotal: ["Serum Bilirubin (Total)"],
+                bilirubinDirect: ["Serum Bilirubin (Direct)"],
+            },
+        },
+        {
+            targetNames: ["Globulin"],
+            displayExpression: "Serum Protein - Serum Albumin",
+            expressionTemplate: "{{serumProtein}} - {{serumAlbumin}}",
+            dependencies: {
+                serumProtein: ["Serum Protein"],
+                serumAlbumin: ["Serum Albumin"],
+            },
+        },
+        {
+            targetNames: ["A/G Ratio"],
+            displayExpression: "Serum Albumin / Globulin",
+            expressionTemplate: "{{serumAlbumin}} / {{globulin}}",
+            dependencies: {
+                serumAlbumin: ["Serum Albumin"],
+                globulin: ["Globulin"],
+            },
+        },
+        {
+            targetNames: ["Sgot/Sgpt Ratio Formula", "SGOT/SGPT RATIO"],
+            displayExpression: "SGPT (ALT) / SGOT (AST)",
+            expressionTemplate: "{{sgpt}} / {{sgot}}",
+            dependencies: {
+                sgpt: ["SGPT (ALT)"],
+                sgot: ["SGOT (AST)"],
+            },
+        },
+        {
+            targetNames: ["BUN"],
+            displayExpression: "Serum Urea * 0.467",
+            expressionTemplate: "{{serumUrea}} * 0.467",
+            dependencies: {
+                serumUrea: ["Serum Urea"],
+            },
+        },
+        {
+            targetNames: ["Urea / Creatinine Ratio"],
+            displayExpression: "Serum Urea / Serum Creatinine",
+            expressionTemplate: "{{serumUrea}} / {{serumCreatinine}}",
+            dependencies: {
+                serumUrea: ["Serum Urea"],
+                serumCreatinine: ["Serum Creatinine"],
+            },
+        },
+        {
+            targetNames: ["BUN / Creatinine Ratio"],
+            displayExpression: "BUN / Serum Creatinine",
+            expressionTemplate: "{{bun}} / {{serumCreatinine}}",
+            dependencies: {
+                bun: ["BUN"],
+                serumCreatinine: ["Serum Creatinine"],
+            },
+        },
+        {
+            targetNames: ["Transferrin Saturation"],
+            displayExpression: "Iron * 100 / Total Iron Binding Capacity",
+            expressionTemplate: "({{iron}} * 100) / {{tibc}}",
+            dependencies: {
+                iron: ["Iron"],
+                tibc: ["Total Iron Binding Capacity"],
+            },
+        },
+        {
+            targetNames: ["Estimated average glucose", "Estimatedaverageglucose"],
+            displayExpression: "(28.7 * GLYCATED HAEMOGLOBIN(HbA1c)) - 46.7",
+            expressionTemplate: "(28.7 * {{hba1c}}) - 46.7",
+            dependencies: {
+                hba1c: ["GLYCATED HAEMOGLOBIN(HbA1c)"],
+            },
+        },
+        {
+            targetNames: ["index"],
+            displayExpression: "Prothrombin Time Patient Value / Prothrombin Time Control Value",
+            expressionTemplate: "{{ptPatient}} / {{ptControl}}",
+            dependencies: {
+                ptPatient: ["Prothrombin Time Patient Value"],
+                ptControl: ["Prothrombin Time Control Value"],
+            },
+        },
+    ];
+
+    function normalizeFieldIdentity(value) {
+        return String(value || "")
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, "");
+    }
+
+    const DIFFERENTIAL_PERCENTAGE_FIELD_SET = new Set(
+        Object.values(DIFFERENTIAL_PERCENTAGE_FIELD_ALIASES)
+            .flat()
+            .map((fieldName) => normalizeFieldIdentity(fieldName))
+    );
+
+    function tokenizeFormulaExpression(expression) {
+        const source = String(expression || "").trim();
+        const tokens = [];
+        let index = 0;
+
+        while (index < source.length) {
+            const char = source[index];
+
+            if (/\s/.test(char)) {
+                index += 1;
+                continue;
+            }
+
+            if ("+-*/(),".includes(char)) {
+                tokens.push({ type: char, value: char });
+                index += 1;
+                continue;
+            }
+
+            if (char === "{" && source[index + 1] === "{") {
+                const endIndex = source.indexOf("}}", index + 2);
+                if (endIndex === -1) {
+                    throw new Error("Formula placeholder बंद नहीं हुआ है।");
+                }
+
+                const parameterId = source.slice(index + 2, endIndex).trim();
+                tokens.push({ type: "variable", value: parameterId });
+                index = endIndex + 2;
+                continue;
+            }
+
+            if (char === "{" && source[index + 1] !== "{") {
+                const endIndex = source.indexOf("}", index + 1);
+                if (endIndex !== -1) {
+                    const parameterId = source.slice(index + 1, endIndex).trim();
+                    tokens.push({ type: "variable", value: parameterId });
+                    index = endIndex + 1;
+                    continue;
+                }
+            }
+
+            if (/\d|\./.test(char)) {
+                let endIndex = index + 1;
+                while (endIndex < source.length && /[\d.]/.test(source[endIndex])) {
+                    endIndex += 1;
+                }
+
+                tokens.push({
+                    type: "number",
+                    value: Number.parseFloat(source.slice(index, endIndex)),
+                });
+                index = endIndex;
+                continue;
+            }
+
+            if (/[a-zA-Z_]/.test(char)) {
+                let endIndex = index + 1;
+                while (endIndex < source.length && /[a-zA-Z0-9_]/.test(source[endIndex])) {
+                    endIndex += 1;
+                }
+
+                tokens.push({
+                    type: "identifier",
+                    value: source.slice(index, endIndex).toLowerCase(),
+                });
+                index = endIndex;
+                continue;
+            }
+
+            throw new Error(`Unsupported token "${char}"`);
+        }
+
+        return tokens;
+    }
+
+    function createFormulaCursor(tokens) {
+        let index = 0;
+
+        return {
+            peek() {
+                return tokens[index] || null;
+            },
+            next() {
+                return tokens[index++] || null;
+            },
+            isComplete() {
+                return index >= tokens.length;
+            },
+        };
+    }
+
+    function parseFormulaExpression(expression, resolveVariable) {
+        const tokens = tokenizeFormulaExpression(expression);
+        const cursor = createFormulaCursor(tokens);
+
+        function parseExpression() {
+            let value = parseTerm();
+
+            while (true) {
+                const token = cursor.peek();
+                if (!token || (token.type !== "+" && token.type !== "-")) {
+                    return value;
+                }
+
+                cursor.next();
+                const right = parseTerm();
+                value = token.type === "+" ? value + right : value - right;
+            }
+        }
+
+        function parseTerm() {
+            let value = parseFactor();
+
+            while (true) {
+                const token = cursor.peek();
+                if (!token || (token.type !== "*" && token.type !== "/")) {
+                    return value;
+                }
+
+                cursor.next();
+                const right = parseFactor();
+
+                if (token.type === "/") {
+                    if (right === 0) {
+                        throw new Error("Division by zero");
+                    }
+                    value /= right;
+                    continue;
+                }
+
+                value *= right;
+            }
+        }
+
+        function parseFactor() {
+            const token = cursor.peek();
+            if (!token) {
+                throw new Error("Formula expression अधूरा है।");
+            }
+
+            if (token.type === "+") {
+                cursor.next();
+                return parseFactor();
+            }
+
+            if (token.type === "-") {
+                cursor.next();
+                return -parseFactor();
+            }
+
+            if (token.type === "number") {
+                cursor.next();
+                return token.value;
+            }
+
+            if (token.type === "variable") {
+                cursor.next();
+                return resolveVariable(token.value);
+            }
+
+            if (token.type === "(") {
+                cursor.next();
+                const nestedValue = parseExpression();
+                const closing = cursor.next();
+                if (!closing || closing.type !== ")") {
+                    throw new Error("Closing bracket missing");
+                }
+                return nestedValue;
+            }
+
+            if (token.type === "identifier") {
+                cursor.next();
+                const opening = cursor.next();
+                if (!opening || opening.type !== "(") {
+                    throw new Error(`Function ${token.value} malformed`);
+                }
+
+                const args = [];
+                if (cursor.peek()?.type !== ")") {
+                    while (true) {
+                        args.push(parseExpression());
+                        if (cursor.peek()?.type === ",") {
+                            cursor.next();
+                            continue;
+                        }
+                        break;
+                    }
+                }
+
+                const closing = cursor.next();
+                if (!closing || closing.type !== ")") {
+                    throw new Error(`Function ${token.value} closing bracket missing`);
+                }
+
+                const handler = FORMULA_FUNCTIONS[token.value];
+                if (!handler) {
+                    throw new Error(`Unsupported function ${token.value}`);
+                }
+
+                return handler(...args);
+            }
+
+            throw new Error(`Unexpected token ${token.value}`);
+        }
+
+        const result = parseExpression();
+        if (!cursor.isComplete()) {
+            throw new Error("Formula expression invalid है।");
+        }
+        return result;
+    }
+
+    async function loadTenantFormulas() {
+        try {
+            const response = await fetch(`${BASE_URL}/api/v1/user/formulas/active`, {
+                credentials: "include",
+            });
+            const result = await response.json();
+
+            if (!response.ok) {
+                throw new Error(result.message || "Failed to load formulas");
+            }
+
+            formulaState.formulas = Array.isArray(result.data) ? result.data : [];
+            console.log(`[Formula Engine] Loaded ${formulaState.formulas.length} active formula(s) from server`);
+        } catch (error) {
+            formulaState.formulas = [];
+            console.error("Error loading formulas:", error);
+        }
+    }
+
+    const CLINICAL_ALIAS_MAP = {
+        hematocrit: ["hct", "pcv", "packedcellvolume", "hematocrit", "haematocrit", "hematocrithct", "packedcellvolumepcv"],
+        pcv: ["hct", "hematocrit", "haematocrit", "packedcellvolume", "pcv", "hematocrithct"],
+        mcv: ["meancorpuscularvolume", "mcv", "meancorpuscularvolumemcv"],
+        mch: ["meancorpuscularhemoglobin", "mch", "meancorpuscularhemoglobinmch", "meancorpuscularhaemoglobin"],
+        mchc: ["meancorpuscularhemoglobinconcentration", "mchc", "meancorpuscularhemoglobinconcentrationmchc", "meancorpuscularhaemoglobinconcentration"],
+        hemoglobin: ["haemoglobin", "hemoglobin", "hb", "haemoglobinhb", "hemoglobinhb"],
+        rbc: ["totalredbloodcellcount", "rbccount", "rbc", "redbloodcells", "redcell", "redbloodcell"],
+        tlc: ["totalleucocytescount", "totalleukocytecount", "tlc", "wbc", "totalcountwbc", "totalcount", "whitebloodcells"],
+        neutrophils: ["neutrophilspercentage", "neutrophilpercentage", "neutrophils%", "neutrophils"],
+        lymphocytes: ["lymphocytepercentage", "lymphocytespercentage", "lymphocytes%", "lymphocytes"],
+        monocytes: ["monocytespercentage", "monocytepercentage", "monocytes%", "monocytes"],
+        eosinophils: ["eosinophilspercentage", "eosinophilpercentage", "eosinophils%", "eosinophils"],
+        basophils: ["basophilspercentage", "basophilpercentage", "basophils%", "basophils"],
+        neutrophilsabs: ["neutrophilsabsolutecount", "neutrophilsabs", "absoluteneutrophilcount", "anc", "neutrophilsabsolutecountanc"],
+        lymphocytesabs: ["lymphocytesabsolutecount", "lymphocytesabs", "absolutelymphocytecount", "alc", "lymphocytesabsolutecountalc"],
+        monocytesabs: ["monocyteabsolutecount", "monocytesabs", "absolutemonocytecount", "amc", "monocyteabsolutecountamc"],
+        eosinophilsabs: ["eosinophilabsolutecount", "eosinophilsabs", "absoluteeosinophilcount", "aec", "eosinophilsabsolutecountaec"],
+        basophilsabs: ["basophilsabsolutecount", "basophilsabs", "absolutebasophilcount", "abc", "basophilsabsolutecountabc"],
+        nlr: ["neutrophillymphocyteratio", "nlr"],
+        vldl: ["vldlcholesterol", "vldl"],
+        ldl: ["ldlcholesterol", "ldl"],
+        nonhdl: ["nonhdlcholesterol", "nonhdl"],
+        totalcholesterol: ["totalcholesterol", "cholesteroltotal", "cholesterol"],
+        hdl: ["hdlcholesterol", "hdl"],
+        triglycerides: ["triglycerides", "triglyceride", "tg"],
+        bilirubintotal: ["serumbilirubintotal", "bilirubintotal", "totalbilirubin"],
+        bilirubindirect: ["serumbilirubindirect", "bilirubindirect", "directbilirubin"],
+        bilirubinindirect: ["serumbilirubinindirect", "bilirubinindirect", "indirectbilirubin"],
+        totalprotein: ["serumprotein", "totalprotein", "protein"],
+        albumin: ["serumalbumin", "albumin"],
+        globulin: ["serumglobulin", "globulin"],
+        agratio: ["agratio", "a/gratio", "albumin/globulinratio"],
+        urea: ["serumurea", "urea"],
+        creatinine: ["serumcreatinine", "creatinine"],
+        bun: ["bloodureanitrogen", "bun"],
+        hba1c: ["glycatedhaemoglobinhba1c", "hba1c"],
+    };
+
+    function normalizeClinicalName(name) {
+        if (!name) return "";
+        const clean = String(name).toLowerCase().replace(/[^a-z0-9]/g, " ");
+        const s = " " + clean + " ";
+
+        // Prioritize platelet indices so Platelet haematocrit (PCT) does not falsely match red blood cell hematocrit (HCT)
+        if (s.includes(" platelet ") || s.includes(" plt ") || s.includes(" pct ")) {
+            if (s.includes(" haematocrit ") || s.includes(" hematocrit ") || s.includes(" pct ")) return "pct";
+            if (s.includes(" distribution ") || s.includes(" pdw ")) return "pdw";
+            if (s.includes(" volume ") || s.includes(" mpv ")) return "mpv";
+            return "platelet";
+        }
+
+        if (s.includes(" rdw ") || s.includes(" distribution width ") || s.includes(" red cell distribution ")) return "rdw";
+        if (s.includes(" mchc ") || s.includes(" mean corpuscular hemoglobin concentration ") || s.includes(" mean corpuscular haemoglobin concentration ")) return "mchc";
+        if (s.includes(" mch ") || s.includes(" mean corpuscular hemoglobin ") || s.includes(" mean corpuscular haemoglobin ")) return "mch";
+        if (s.includes(" mcv ") || s.includes(" mean corpuscular volume ")) return "mcv";
+        if (s.includes(" hct ") || s.includes(" pcv ") || s.includes(" hematocrit ") || s.includes(" haematocrit ") || s.includes(" packed cell volume ")) return "hematocrit";
+        if (s.includes(" hb ") || s.includes(" hemoglobin ") || s.includes(" haemoglobin ")) return "hemoglobin";
+        if (s.includes(" rbc ") || s.includes(" red blood cell ") || s.includes(" red blood cells ") || s.includes(" red cell ") || s.includes(" erythrocyte ")) return "rbc";
+        if (s.includes(" tlc ") || s.includes(" wbc ") || s.includes(" leukocyte ") || s.includes(" leucocyte ") || s.includes(" total count wbc ") || s.includes(" white blood cell ") || s.includes(" total count ")) return "tlc";
+        if (s.includes(" anc ") || s.includes(" absolute neutrophil ")) return "anc";
+        if (s.includes(" alc ") || s.includes(" absolute lymphocyte ")) return "alc";
+        if (s.includes(" aec ") || s.includes(" absolute eosinophil ")) return "aec";
+        if (s.includes(" amc ") || s.includes(" absolute monocyte ")) return "amc";
+        if (s.includes(" abc ") || s.includes(" absolute basophil ")) return "abc";
+        if (s.includes(" neutrophil ") || s.includes(" neutrophils ")) return "neutrophils";
+        if (s.includes(" lymphocyte ") || s.includes(" lymphocytes ")) return "lymphocytes";
+        if (s.includes(" eosinophil ") || s.includes(" eosinophils ")) return "eosinophils";
+        if (s.includes(" monocyte ") || s.includes(" monocytes ")) return "monocytes";
+        if (s.includes(" basophil ") || s.includes(" basophils ")) return "basophils";
+
+        return clean.replace(/\s+/g, "");
+    }
+
+    function isDifferentialPercentageField(input) {
+        if (!input) return false;
+        const rawName = String(
+            input.dataset?.paramName ||
+            input.dataset?.id ||
+            input.closest("tr")?.querySelector(".test-name-cell")?.textContent ||
+            input.closest("tr")?.children?.[1]?.textContent ||
+            ""
+        ).toLowerCase();
+        const normalized = normalizeFieldIdentity(rawName);
+        if (DIFFERENTIAL_PERCENTAGE_FIELD_SET.has(normalized)) return true;
+        return /neutrophil.*percent|lymphocyte.*percent|eosinophil.*percent|monocyte.*percent|basophil.*percent/.test(normalized);
+    }
+
+    function isAbsoluteCountQuery(names = []) {
+        return names.some((name) => {
+            const lower = String(name || "").toLowerCase();
+            return /\b(abs|absolute|anc|alc|aec|amc|abc)\b/i.test(lower) || /\(abs\)/i.test(lower) || lower.includes("absolute");
+        });
+    }
+
+    function buildLegacyFieldIndex() {
+        const fieldIndex = new Map();
+
+        document.querySelectorAll(".value-input[data-param-id]").forEach((input) => {
+            const names = [
+                input.dataset.paramName,
+                input.dataset.id,
+                input.dataset.shortname,
+                input.closest("tr")?.querySelector(".test-name-cell")?.textContent,
+                input.closest("tr")?.children?.[1]?.textContent,
+            ];
+
+            names.forEach((name) => {
+                if (!name) return;
+                const normalizedName = normalizeFieldIdentity(name);
+                if (normalizedName && !fieldIndex.has(normalizedName)) {
+                    fieldIndex.set(normalizedName, input);
+                }
+
+                const coreName = normalizeClinicalName(name);
+                if (coreName && !fieldIndex.has(coreName)) {
+                    fieldIndex.set(coreName, input);
+                }
+
+                // Index clinical alias keys
+                for (const [canonical, aliases] of Object.entries(CLINICAL_ALIAS_MAP)) {
+                    if (canonical === coreName || aliases.includes(coreName) || aliases.includes(normalizedName)) {
+                        if (!fieldIndex.has(canonical)) fieldIndex.set(canonical, input);
+                        aliases.forEach((aliasKey) => {
+                            if (!fieldIndex.has(aliasKey)) fieldIndex.set(aliasKey, input);
+                        });
+                    }
+                }
+            });
+        });
+
+        return fieldIndex;
+    }
+
+    function findLegacyInput(fieldIndex, names = []) {
+        if (!fieldIndex) return null;
+        const searchingForAbsolute = isAbsoluteCountQuery(names);
+
+        const checkCandidate = (candInput) => {
+            if (!candInput) return null;
+            // Differential percentage fields are manual technician inputs and must NEVER match absolute count targets
+            if (searchingForAbsolute && isDifferentialPercentageField(candInput)) {
+                return null;
+            }
+            return candInput;
+        };
+
+        for (const name of names) {
+            if (!name) continue;
+            const direct = checkCandidate(fieldIndex.get(String(name).trim()));
+            if (direct) return direct;
+
+            const normalizedName = normalizeFieldIdentity(name);
+            const matchedInput = checkCandidate(fieldIndex.get(normalizedName));
+            if (matchedInput) {
+                return matchedInput;
+            }
+
+            const coreName = normalizeClinicalName(name);
+            const matchedCore = checkCandidate(fieldIndex.get(coreName));
+            if (matchedCore) {
+                return matchedCore;
+            }
+
+            for (const [canonical, aliases] of Object.entries(CLINICAL_ALIAS_MAP)) {
+                if (canonical === coreName || aliases.includes(coreName) || aliases.includes(normalizedName)) {
+                    for (const candidate of [canonical, ...aliases]) {
+                        const hit = checkCandidate(fieldIndex.get(candidate));
+                        if (hit) return hit;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    function adaptSavedFormulasToPage(savedFormulas, fieldIndex) {
+        if (!Array.isArray(savedFormulas) || savedFormulas.length === 0) {
+            return [];
+        }
+
+        const adaptedList = [];
+        const seenTargetMasterKeys = new Set();
+
+        savedFormulas.forEach((formula) => {
+            if (!formula || formula.isActive === false) return;
+
+            function buildCandidateQueryNames(rawLabel) {
+                const list = [];
+                if (!rawLabel) return list;
+                const raw = String(rawLabel).trim();
+                list.push(raw);
+
+                // Trailing parenthesized test/panel qualifier: 'Hematocrit (COMPLETE BLOOD COUNT (CBC))' -> 'Hematocrit'
+                const trailingStripped = raw.replace(/\s*\([^)()]*(?:\([^()]*\)[^)()]*)*\)\s*$/, "").trim();
+                if (trailingStripped && !list.includes(trailingStripped)) {
+                    list.push(trailingStripped);
+                }
+
+                // Strip all parenthesized expressions
+                let allStripped = raw;
+                while (/\([^()]*\)/.test(allStripped)) {
+                    allStripped = allStripped.replace(/\s*\([^()]*\)/g, " ").trim();
+                }
+                allStripped = allStripped.replace(/\s+/g, " ").trim();
+                if (allStripped && !list.includes(allStripped)) {
+                    list.push(allStripped);
+                }
+
+                const withNorms = [];
+                list.forEach((item) => {
+                    withNorms.push(item);
+                    const clin = normalizeClinicalName(item);
+                    if (clin && !withNorms.includes(clin)) withNorms.push(clin);
+                    const fld = normalizeFieldIdentity(item);
+                    if (fld && !withNorms.includes(fld)) withNorms.push(fld);
+                });
+                return withNorms;
+            }
+
+            // 1. Check if the formula's target already exists on the current page by master key or paramId
+            let targetInput = formulaState.inputByMasterKey.get(String(formula.targetMasterKey || ""));
+            if (!targetInput && formula.targetParameterId) {
+                targetInput = formulaState.inputByMasterKey.get(String(formula.targetParameterId));
+            }
+
+            // 2. If not found by master key/paramId, find by targetLabel or clinical name
+            if (!targetInput) {
+                targetInput = findLegacyInput(fieldIndex, buildCandidateQueryNames(formula.targetLabel));
+            }
+
+            if (!targetInput) {
+                return;
+            }
+
+            if (!targetInput.dataset.masterParamKey) {
+                targetInput.dataset.masterParamKey = targetInput.dataset.paramId || targetInput.dataset.testId || `param_${normalizeFieldIdentity(targetInput.dataset.paramName || targetInput.dataset.id || "target")}`;
+            }
+
+            // CRITICAL GUARD: Differential percentage fields must NEVER have a formula attached as a target!
+            if (isDifferentialPercentageField(targetInput)) {
+                return;
+            }
+
+            const pageTargetMasterKey = String(targetInput.dataset.masterParamKey);
+            if (seenTargetMasterKeys.has(pageTargetMasterKey)) {
+                return;
+            }
+
+            // 3. Resolve all dependencies to fields on the current page
+            let adaptedExpression = String(formula.expression || "");
+            const adaptedDependencies = [];
+            let allDependenciesResolved = true;
+
+            (formula.dependencies || []).forEach((dep) => {
+                const origDepKey = String(dep.parameterMasterKey || "");
+                let depInput = origDepKey ? formulaState.inputByMasterKey.get(origDepKey) : null;
+                if (!depInput && dep.parameterId) {
+                    depInput = formulaState.inputByMasterKey.get(String(dep.parameterId));
+                }
+
+                if (!depInput) {
+                    depInput = findLegacyInput(fieldIndex, buildCandidateQueryNames(dep.label));
+                }
+
+                if (!depInput) {
+                    allDependenciesResolved = false;
+                    return;
+                }
+
+                if (!depInput.dataset.masterParamKey) {
+                    depInput.dataset.masterParamKey = depInput.dataset.paramId || depInput.dataset.testId || `param_${normalizeFieldIdentity(depInput.dataset.paramName || depInput.dataset.id || "dep")}`;
+                }
+
+                const pageDepMasterKey = String(depInput.dataset.masterParamKey);
+
+                if (origDepKey && origDepKey !== pageDepMasterKey) {
+                    adaptedExpression = adaptedExpression.split(`{{${origDepKey}}}`).join(`{{${pageDepMasterKey}}}`);
+                    adaptedExpression = adaptedExpression.split(`{${origDepKey}}`).join(`{{${pageDepMasterKey}}}`);
+                }
+                if (dep.parameterId && String(dep.parameterId) !== pageDepMasterKey) {
+                    adaptedExpression = adaptedExpression.split(`{{${dep.parameterId}}}`).join(`{{${pageDepMasterKey}}}`);
+                    adaptedExpression = adaptedExpression.split(`{${dep.parameterId}}`).join(`{{${pageDepMasterKey}}}`);
+                }
+
+                adaptedDependencies.push({
+                    testId: depInput.dataset.testId || dep.testId || null,
+                    parameterId: depInput.dataset.paramId || dep.parameterId || null,
+                    parameterMasterKey: pageDepMasterKey,
+                    label: depInput.dataset.paramName || depInput.dataset.id || dep.label || "",
+                });
+            });
+
+            if (!allDependenciesResolved || !adaptedDependencies.length) {
+                return;
+            }
+
+            seenTargetMasterKeys.add(pageTargetMasterKey);
+
+            adaptedList.push({
+                ...formula,
+                targetMasterKey: pageTargetMasterKey,
+                targetTestId: targetInput.dataset.testId || formula.targetTestId,
+                targetParameterId: targetInput.dataset.paramId || formula.targetParameterId,
+                targetLabel: targetInput.dataset.paramName || formula.targetLabel,
+                expression: adaptedExpression,
+                displayExpression: formula.displayExpression || adaptedExpression,
+                dependencies: adaptedDependencies,
+                precision: Number.isFinite(Number(formula.precision)) ? Number(formula.precision) : 2,
+                isActive: true,
+                allowManualOverride: Boolean(formula.allowManualOverride),
+            });
+        });
+
+        return adaptedList;
+    }
+
+    function buildLegacyFallbackFormulas(savedFormulas, fieldIndex = null) {
+        const resolvedFieldIndex = fieldIndex || buildLegacyFieldIndex();
+        const savedTargetIds = new Set(
+            (savedFormulas || []).map((formula) => String(formula.targetMasterKey || ""))
+        );
+        const fallbackFormulas = [];
+
+        LEGACY_FORMULA_CONFIGS.forEach((config) => {
+            const targetInput = findLegacyInput(resolvedFieldIndex, config.targetNames);
+            if (!targetInput?.dataset?.masterParamKey) {
+                return;
+            }
+
+            // CRITICAL GUARD: Differential percentage fields must NEVER have a formula attached as a target!
+            if (isDifferentialPercentageField(targetInput)) {
+                return;
+            }
+
+            const targetMasterKey = String(targetInput.dataset.masterParamKey);
+            if (savedTargetIds.has(targetMasterKey)) {
+                return;
+            }
+
+            const dependencies = [];
+            let expression = config.expressionTemplate;
+            let canBuildFormula = true;
+
+            Object.entries(config.dependencies || {}).forEach(([tokenKey, dependencyNames]) => {
+                const dependencyInput = findLegacyInput(resolvedFieldIndex, dependencyNames);
+                if (!dependencyInput?.dataset?.masterParamKey) {
+                    canBuildFormula = false;
+                    return;
+                }
+
+                const dependencyMasterKey = String(dependencyInput.dataset.masterParamKey);
+                expression = expression.split(`{{${tokenKey}}}`).join(`{{${dependencyMasterKey}}}`);
+                dependencies.push({
+                    testId: dependencyInput.dataset.testId || null,
+                    parameterId: dependencyInput.dataset.paramId || null,
+                    parameterMasterKey: dependencyMasterKey,
+                    label: dependencyInput.dataset.paramName || dependencyInput.dataset.id || dependencyNames[0] || "",
+                });
+            });
+
+            if (!canBuildFormula) {
+                return;
+            }
+
+            savedTargetIds.add(targetMasterKey);
+
+            fallbackFormulas.push({
+                _id: `legacy-${targetMasterKey}`,
+                targetTestId: targetInput.dataset.testId || null,
+                targetParameterId: targetInput.dataset.paramId || null,
+                targetMasterKey,
+                targetLabel: targetInput.dataset.paramName || targetInput.dataset.id || config.targetNames[0],
+                expression,
+                displayExpression: config.displayExpression,
+                dependencies,
+                precision: 2,
+                isActive: true,
+                allowManualOverride: false,
+            });
+        });
+
+        return fallbackFormulas;
+    }
+
+    function rebuildFormulaIndexes() {
+        formulaState.formulaByTargetMasterKey.clear();
+        formulaState.dependentsBySourceMasterKey.clear();
+        formulaState.inputByMasterKey.clear();
+
+        document.querySelectorAll(".value-input").forEach((input) => {
+            if (!input.dataset.masterParamKey) {
+                input.dataset.masterParamKey = input.dataset.paramId || input.dataset.testId || `param_${normalizeFieldIdentity(input.dataset.paramName || input.dataset.id || "field")}`;
+            }
+
+            const rawKeys = [
+                String(input.dataset.masterParamKey || ""),
+                String(input.dataset.paramId || ""),
+                String(input.dataset.testId || ""),
+                normalizeClinicalName(input.dataset.paramName),
+                normalizeFieldIdentity(input.dataset.paramName),
+                normalizeClinicalName(input.dataset.id),
+                normalizeFieldIdentity(input.dataset.id),
+            ].filter(Boolean);
+
+            rawKeys.forEach((key) => {
+                if (!formulaState.inputByMasterKey.has(key)) {
+                    formulaState.inputByMasterKey.set(key, input);
+                }
+            });
+
+            // Also register clinical alias keys for input lookup
+            const coreName = normalizeClinicalName(input.dataset.paramName) || normalizeClinicalName(input.dataset.id);
+            if (coreName) {
+                for (const [canonical, aliases] of Object.entries(CLINICAL_ALIAS_MAP)) {
+                    if (canonical === coreName || aliases.includes(coreName)) {
+                        [canonical, ...aliases].forEach((aliasKey) => {
+                            if (!formulaState.inputByMasterKey.has(aliasKey)) {
+                                formulaState.inputByMasterKey.set(aliasKey, input);
+                            }
+                        });
+                    }
+                }
+            }
+        });
+
+        formulaState.formulas.forEach((formula) => {
+            const targetMasterKey = String(formula.targetMasterKey || "");
+            const targetParamId = String(formula.targetParameterId || "");
+            const targetLabelClinical = normalizeClinicalName(formula.targetLabel);
+            const targetLabelField = normalizeFieldIdentity(formula.targetLabel);
+
+            [targetMasterKey, targetParamId, targetLabelClinical, targetLabelField].filter(Boolean).forEach((tKey) => {
+                if (!formulaState.formulaByTargetMasterKey.has(tKey)) {
+                    formulaState.formulaByTargetMasterKey.set(tKey, formula);
+                }
+            });
+
+            (formula.dependencies || []).forEach((dependency) => {
+                const depKeys = [
+                    String(dependency.parameterMasterKey || ""),
+                    String(dependency.parameterId || ""),
+                    normalizeClinicalName(dependency.label),
+                    normalizeFieldIdentity(dependency.label),
+                ].filter(Boolean);
+
+                const depCore = normalizeClinicalName(dependency.label);
+                if (depCore) {
+                    for (const [canonical, aliases] of Object.entries(CLINICAL_ALIAS_MAP)) {
+                        if (canonical === depCore || aliases.includes(depCore)) {
+                            [canonical, ...aliases].forEach((alias) => depKeys.push(alias));
+                        }
+                    }
+                }
+
+                depKeys.forEach((key) => {
+                    if (!formulaState.dependentsBySourceMasterKey.has(key)) {
+                        formulaState.dependentsBySourceMasterKey.set(key, []);
+                    }
+                    const list = formulaState.dependentsBySourceMasterKey.get(key);
+                    if (!list.includes(formula)) {
+                        list.push(formula);
+                    }
+                });
+            });
+        });
+    }
+
+    function setFormulaInputDisplayState(input, formula) {
+        if (!input) return;
+
+        input.dataset.formulaField = "true";
+        input.dataset.formulaTargetId = String(formula._id || "");
+        input.readOnly = !formula.allowManualOverride;
+        input.classList.toggle("formula-value-input", true);
+    }
+
+    function addIconsToMatchingRows() {
+        // First map all inputs currently present on the page
+        rebuildFormulaIndexes();
+        const fieldIndex = buildLegacyFieldIndex();
+
+        // Adapt formulas saved in DB to current fields (even across panel sub-tests or test variants)
+        const adaptedSaved = adaptSavedFormulasToPage(formulaState.formulas, fieldIndex);
+
+        // Fallback formulas for standard panels not yet saved in DB
+        const fallbackFormulas = buildLegacyFallbackFormulas(adaptedSaved, fieldIndex);
+
+        // Set active formula list and rebuild lookup indexes
+        formulaState.formulas = [...adaptedSaved, ...fallbackFormulas];
+        rebuildFormulaIndexes();
+
+        const allInputs = document.querySelectorAll(".value-input");
+
+        allInputs.forEach((input) => {
+            const row = input.closest("tr");
+            const valueColumn = input.closest(".value-column")?.querySelector(".formulaIcon") || row?.querySelector(".formulaIcon");
+            if (!valueColumn) return;
+
+            // Strict safety: differential percentage fields must never have formulas attached
+            if (isDifferentialPercentageField(input)) {
+                delete input.dataset.formulaField;
+                delete input.dataset.formulaTargetId;
+                input.readOnly = false;
+                input.classList.remove("formula-value-input");
+                const existingIcon = valueColumn.querySelector(".icon");
+                if (existingIcon) existingIcon.remove();
+                return;
+            }
+
+            // Find formula by master key, paramId, or clinical/field alias
+            const possibleKeys = [
+                String(input.dataset.masterParamKey || ""),
+                String(input.dataset.paramId || ""),
+                normalizeClinicalName(input.dataset.paramName),
+                normalizeFieldIdentity(input.dataset.paramName),
+                normalizeClinicalName(input.dataset.id),
+                normalizeFieldIdentity(input.dataset.id),
+            ].filter(Boolean);
+
+            let formula = null;
+            for (const key of possibleKeys) {
+                if (formulaState.formulaByTargetMasterKey.has(key)) {
+                    formula = formulaState.formulaByTargetMasterKey.get(key);
+                    break;
+                }
+            }
+
+            if (!formula) {
+                return;
+            }
+
+            setFormulaInputDisplayState(input, formula);
+
+            if (valueColumn.querySelector(".icon")) return;
+
+            const title = row?.querySelector(".test-name-cell")?.textContent?.trim() || row?.children?.[1]?.textContent?.trim() || formula.targetLabel || input.dataset.paramName || "Formula";
+            const icon = document.createElement("div");
+            icon.type = "div";
+            icon.classList.add("icon", "formula-icon-button", "formula-tooltip-container");
+            icon.tabIndex = -1;
+            icon.setAttribute("aria-label", `Formula for ${title}`);
+            icon.innerHTML = `<i class="fa-solid fa-calculator" aria-hidden="true"></i>`;
+
+            const tooltip = document.createElement("div");
+            tooltip.classList.add("tooltip-box");
+
+            const tooltipLabel = document.createElement("div");
+            tooltipLabel.className = "tooltip-box__label";
+            tooltipLabel.textContent = "Formula";
+
+            const tooltipFormula = document.createElement("code");
+            tooltipFormula.className = "tooltip-box__formula";
+            tooltipFormula.textContent = formula.displayExpression || formula.expression || "";
+
+            tooltip.appendChild(tooltipLabel);
+            tooltip.appendChild(tooltipFormula);
+            icon.appendChild(tooltip);
+            valueColumn.appendChild(icon);
+        });
+    }
+
+    function getNumericValueFromInput(input) {
+        if (!input) {
+            return { hasValue: false, value: 0 };
+        }
+
+        const rawValue = String(input.value || "").trim();
+        if (rawValue === "") {
+            return { hasValue: false, value: 0 };
+        }
+
+        const numericValue = Number.parseFloat(rawValue);
+        if (!Number.isFinite(numericValue)) {
+            return { hasValue: false, value: 0 };
+        }
+
+        return { hasValue: true, value: numericValue };
+    }
+
+    function applyComputedFormulaValue(input, formula, value) {
+        if (!input) return;
+
+        const precision = Number.isFinite(Number(formula.precision)) ? Number(formula.precision) : 2;
+        input.value = Number(value).toFixed(precision);
+        processInput(input);
+    }
+
+    function clearComputedFormulaValue(input) {
+        if (!input) return;
+        input.value = "";
+        processInput(input);
+    }
+
+    function recalculateSingleFormula(formula) {
+        const targetMasterKey = String(formula.targetMasterKey || "");
+        const targetInput = formulaState.inputByMasterKey.get(targetMasterKey);
+        if (!targetInput) {
+            return false;
+        }
+
+        const dependencyValues = {};
+        let hasAnyDependencyValue = false;
+        let hasMissingDependency = false;
+
+        (formula.dependencies || []).forEach((dependency) => {
+            const dependencyMasterKey = String(dependency.parameterMasterKey || "");
+            let dependencyInput = formulaState.inputByMasterKey.get(dependencyMasterKey);
+            if (!dependencyInput && dependency.parameterId) {
+                dependencyInput = formulaState.inputByMasterKey.get(String(dependency.parameterId));
+            }
+            if (!dependencyInput && dependency.label) {
+                dependencyInput = formulaState.inputByMasterKey.get(normalizeClinicalName(dependency.label)) ||
+                                  formulaState.inputByMasterKey.get(normalizeFieldIdentity(dependency.label));
+            }
+
+            const { hasValue, value } = getNumericValueFromInput(dependencyInput);
+
+            // Populate all identifier keys for robust lookup in parseFormulaExpression
+            if (dependencyMasterKey) dependencyValues[dependencyMasterKey] = value;
+            if (dependency.parameterId) dependencyValues[String(dependency.parameterId)] = value;
+            if (dependency.label) {
+                dependencyValues[dependency.label] = value;
+                dependencyValues[normalizeClinicalName(dependency.label)] = value;
+                dependencyValues[normalizeFieldIdentity(dependency.label)] = value;
+            }
+
+            hasAnyDependencyValue = hasAnyDependencyValue || hasValue;
+            hasMissingDependency = hasMissingDependency || !hasValue;
+        });
+
+        const prevVal = String(targetInput.value || "").trim();
+
+        if (!hasAnyDependencyValue || hasMissingDependency) {
+            if (prevVal !== "") {
+                clearComputedFormulaValue(targetInput);
+                return true;
+            }
+            return false;
+        }
+
+        try {
+            const computedValue = parseFormulaExpression(formula.expression, (parameterId) => {
+                const key = String(parameterId || "").trim();
+                if (key in dependencyValues) return dependencyValues[key];
+                const cleanKey = normalizeFieldIdentity(key);
+                if (cleanKey in dependencyValues) return dependencyValues[cleanKey];
+                const clinicalKey = normalizeClinicalName(key);
+                if (clinicalKey in dependencyValues) return dependencyValues[clinicalKey];
+                return 0;
+            });
+
+            applyComputedFormulaValue(targetInput, formula, computedValue);
+            const newVal = String(targetInput.value || "").trim();
+            return prevVal !== newVal;
+        } catch (error) {
+            console.error(`Error evaluating formula for ${formula.targetLabel}:`, error);
+            if (prevVal !== "") {
+                clearComputedFormulaValue(targetInput);
+                return true;
+            }
+            return false;
+        }
+    }
+
+    function recalculateFormulaCascadeFromParam(paramId, inputElement = null) {
+        const queue = [String(paramId || "")];
+        if (inputElement) {
+            if (inputElement.dataset?.paramId) queue.push(String(inputElement.dataset.paramId));
+            if (inputElement.dataset?.paramName) {
+                queue.push(normalizeClinicalName(inputElement.dataset.paramName));
+                queue.push(normalizeFieldIdentity(inputElement.dataset.paramName));
+            }
+            if (inputElement.dataset?.id) {
+                queue.push(normalizeFieldIdentity(inputElement.dataset.id));
+            }
+        }
+
+        const seen = new Set();
+        let steps = 0;
+        const MAX_STEPS = 60;
+
+        while (queue.length && steps < MAX_STEPS) {
+            steps += 1;
+            const sourceKey = queue.shift();
+            if (!sourceKey || seen.has(sourceKey)) continue;
+            seen.add(sourceKey);
+
+            const dependentFormulas = formulaState.dependentsBySourceMasterKey.get(sourceKey) || [];
+
+            dependentFormulas.forEach((formula) => {
+                const targetMasterKey = String(formula.targetMasterKey || "");
+                if (!targetMasterKey || targetMasterKey === sourceKey) {
+                    return;
+                }
+
+                const wasChanged = recalculateSingleFormula(formula);
+                if (wasChanged) {
+                    queue.push(targetMasterKey);
+                }
+            });
+        }
+    }
+
+    function recalculateAllFormulas() {
+        let changed = true;
+        let passes = 0;
+        const MAX_PASSES = 10;
+        while (changed && passes < MAX_PASSES) {
+            changed = false;
+            passes += 1;
+            formulaState.formulas.forEach((formula) => {
+                const didChange = recalculateSingleFormula(formula);
+                if (didChange) {
+                    changed = true;
+                }
+            });
+        }
+    }
+
     function parseStoredCheckboxFlag(value) {
         if (typeof value === "boolean") return value;
         if (typeof value === "number") return value === 1;
@@ -55,7 +1791,16 @@ async function loadfunction() {
         return Boolean(value);
     }
 
-    function isEnterNavigationField(element) {
+    function resolveStoredCheckboxFlag(...values) {
+        for (const value of values) {
+            if (value !== undefined && value !== null) {
+                return parseStoredCheckboxFlag(value);
+            }
+        }
+        return false;
+    }
+
+    function isKeyboardNavigationField(element) {
         if (!(element instanceof HTMLElement)) return false;
         if (!element.matches("input, select")) return false;
         if (element.matches("textarea, [contenteditable='true']")) return false;
@@ -70,25 +1815,91 @@ async function loadfunction() {
         return true;
     }
 
-    function focusNextEnterField(currentField) {
-        const enterNavigationFields = Array.from(
+    function isManualNavigationField(element) {
+        return isKeyboardNavigationField(element) && element.dataset.formulaField !== "true";
+    }
+
+    function focusFieldWithCenteredScroll(field) {
+        if (!field) return;
+
+        const scrollTarget = field.closest("tr") || field;
+        field.focus({ preventScroll: true });
+        if (typeof field.select === "function" && field.tagName === "INPUT") {
+            field.select();
+        }
+        smoothScrollTo(scrollTarget);
+    }
+
+    function focusNextManualField(currentField, direction = 1) {
+        const navigationFields = Array.from(
             document.querySelectorAll("input, select")
         ).filter((field) => {
-            if (!isEnterNavigationField(field)) return false;
+            if (!isKeyboardNavigationField(field)) return false;
             const style = window.getComputedStyle(field);
             return style.display !== "none" && style.visibility !== "hidden";
         });
 
-        const currentIndex = enterNavigationFields.indexOf(currentField);
-        if (currentIndex === -1) return;
+        const currentIndex = navigationFields.indexOf(currentField);
+        if (currentIndex === -1) return false;
 
-        const nextField = enterNavigationFields[currentIndex + 1];
-        if (!nextField) return;
-
-        nextField.focus();
-        if (typeof nextField.select === "function" && nextField.tagName === "INPUT") {
-            nextField.select();
+        for (
+            let nextIndex = currentIndex + direction;
+            nextIndex >= 0 && nextIndex < navigationFields.length;
+            nextIndex += direction
+        ) {
+            const nextField = navigationFields[nextIndex];
+            if (!isManualNavigationField(nextField)) continue;
+            focusFieldWithCenteredScroll(nextField);
+            return true;
         }
+
+        return false;
+    }
+
+    function isBlankOrDotOnlyValue(value) {
+        const normalized = String(value ?? "").trim();
+        return normalized === "" || /^[.\s]+$/.test(normalized);
+    }
+
+    function getVisibleManualValueInputs() {
+        return Array.from(document.querySelectorAll(".value-input")).filter((input) => {
+            if (!(input instanceof HTMLElement)) return false;
+            if (!isManualNavigationField(input)) return false;
+
+            const style = window.getComputedStyle(input);
+            return style.display !== "none" && style.visibility !== "hidden";
+        });
+    }
+
+    function focusValueInputOrFinalButton(currentField, direction = 1) {
+        const navigationFields = getVisibleManualValueInputs();
+        const currentIndex = navigationFields.indexOf(currentField);
+        if (currentIndex === -1) return false;
+
+        if (direction < 0) {
+            for (let prevIndex = currentIndex - 1; prevIndex >= 0; prevIndex -= 1) {
+                const previousField = navigationFields[prevIndex];
+                if (previousField?.disabled || previousField?.readOnly) continue;
+                focusFieldWithCenteredScroll(previousField);
+                return true;
+            }
+            return false;
+        }
+
+        for (let nextIndex = currentIndex + 1; nextIndex < navigationFields.length; nextIndex += 1) {
+            const nextField = navigationFields[nextIndex];
+            if (nextField?.disabled || nextField?.readOnly) continue;
+            focusFieldWithCenteredScroll(nextField);
+            return true;
+        }
+
+        const finalButton = document.getElementById("finalBtn");
+        if (finalButton && !finalButton.disabled) {
+            focusFieldWithCenteredScroll(finalButton);
+            return true;
+        }
+
+        return false;
     }
 
     // const urlParams = new URLSearchParams(window.location.search);
@@ -126,12 +1937,12 @@ async function loadfunction() {
         if (!response.ok) {
             // Handle non-2xx HTTP responses
             const errorData = await response.json();
-            
+
             return;
         }
 
         const data = await response.json();
-        
+
         testpanels = data[0];
         data[0].barcodes.barcodes.forEach(element => {
             const array = element.testandpannelArray;
@@ -142,39 +1953,178 @@ async function loadfunction() {
 
         recievedOn = formatDateTimeLocal(data[0].barcodes.createdAt);
     } catch (error) {
-        
+
     }
 
     // this is for testArray2
     async function getallpptfromrelatedbarcode(barcodes) {
-        const bookingByBarcode = new Map();
-        booking.tableData.forEach((entry) => {
-            const key = (entry.barcodeId || "").trim();
-            if (!key) return;
-            bookingByBarcode.set(key, entry);
+        const idToNameMap = new Map();
+
+        (testpanels?.singleTests || []).forEach(test => {
+            const name = test?.Short_name || test?.Name;
+            if (test?._id && name) idToNameMap.set(String(test._id), name);
+            if (test?.originalTestId && name) idToNameMap.set(String(test.originalTestId), name);
         });
 
-        for (const object of barcodes) {
-            const match = bookingByBarcode.get((object.barcode || "").trim());
-            if (match?.testName) testArray2.push(...match.testName.split(","));
+        (testpanels?.panels || []).forEach(panel => {
+            if (panel?._id && panel?.name) idToNameMap.set(String(panel._id), panel.name);
+            if (panel?.originalPanelId && panel?.name) idToNameMap.set(String(panel.originalPanelId), panel.name);
+        });
+
+        (testpanels?.packages || []).forEach(pkg => {
+            if (pkg?._id && pkg?.packageName) idToNameMap.set(String(pkg._id), pkg.packageName);
+            if (pkg?.originalPackageId && pkg?.packageName) idToNameMap.set(String(pkg.originalPackageId), pkg.packageName);
+        });
+
+        const bookingByBarcode = new Map();
+        if (Array.isArray(booking?.tableData)) {
+            booking.tableData.forEach((entry) => {
+                const key = (entry.barcodeId || entry.confirmBarcodeId || "").trim();
+                if (!key) return;
+                bookingByBarcode.set(key, entry);
+            });
+        }
+
+        for (const object of (barcodes || [])) {
+            const barcodeKey = (object?.barcode || "").trim();
+            const match = bookingByBarcode.get(barcodeKey);
+            const resolvedForBarcode = [];
+
+            // 1. Resolve by object.testIds (from database acceptedBarcode)
+            if (Array.isArray(object?.testIds) && object.testIds.length > 0) {
+                object.testIds.forEach(item => {
+                    const idKey = item?.id ? String(item.id) : "";
+                    if (idKey && idToNameMap.has(idKey)) {
+                        resolvedForBarcode.push(idToNameMap.get(idKey));
+                    }
+                });
+            }
+
+            // 2. Resolve by match.ids (from booking.tableData)
+            if (resolvedForBarcode.length === 0 && Array.isArray(match?.ids) && match.ids.length > 0) {
+                match.ids.forEach(item => {
+                    const idKey = item?.id ? String(item.id) : "";
+                    if (idKey && idToNameMap.has(idKey)) {
+                        resolvedForBarcode.push(idToNameMap.get(idKey));
+                    }
+                });
+            }
+
+            // 3. If object.testandpannelArray has updated items from API
+            if (resolvedForBarcode.length === 0 && Array.isArray(object?.testandpannelArray) && object.testandpannelArray.length > 0) {
+                resolvedForBarcode.push(...object.testandpannelArray);
+            }
+
+            // 4. Fallback to match.testName string if legacy booking without IDs
+            if (resolvedForBarcode.length === 0 && match?.testName) {
+                resolvedForBarcode.push(...match.testName.split(",").map(t => t.trim()).filter(Boolean));
+            }
+
+            if (resolvedForBarcode.length > 0) {
+                testArray2.push(...resolvedForBarcode);
+                if (match) {
+                    match.testName = [...new Set(resolvedForBarcode)].join(", ");
+                }
+            }
+        }
+
+        // If testArray2 is still empty but testpanels.investigations exists, use that
+        if (testArray2.length === 0 && Array.isArray(testpanels?.investigations) && testpanels.investigations.length > 0) {
+            testArray2.push(...testpanels.investigations);
         }
     }
 
     // for removing duplicacy
-    let uniquetestArray2 = [...new Set(testArray2)];
-    let uniquetestArray = [...new Set(testArray)];
+    let uniquetestArray2 = [...new Set(testArray2.map(s => String(s).trim()).filter(Boolean))];
+    let uniquetestArray = [...new Set(testArray.map(s => String(s).trim()).filter(Boolean))];
+
+    function parseDateInput(value, fallbackTime = "") {
+        if (!value) return null;
+
+        if (value instanceof Date) {
+            return Number.isNaN(value.getTime()) ? null : value;
+        }
+
+        const rawValue = String(value).trim();
+        if (!rawValue) return null;
+
+        const timeMatch = String(fallbackTime || "")
+            .trim()
+            .match(/^(\d{1,2}):(\d{2})/);
+        const fallbackHours = timeMatch ? Number(timeMatch[1]) : 0;
+        const fallbackMinutes = timeMatch ? Number(timeMatch[2]) : 0;
+
+        // IST offset in ms: UTC + 5:30
+        const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+        const isoDateMatch = rawValue.match(/^(\d{4})-(\d{2})-(\d{2})T/);
+        if (isoDateMatch && timeMatch) {
+            const [, year, month, day] = isoDateMatch;
+            // Create date in UTC by applying IST offset, so getUTC* extracts IST components
+            const utcMs = Date.UTC(Number(year), Number(month) - 1, Number(day), fallbackHours, fallbackMinutes) - IST_OFFSET_MS;
+            return new Date(utcMs);
+        }
+
+        const ymdMatch = rawValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (ymdMatch) {
+            const [, year, month, day] = ymdMatch;
+            // Create date at IST midnight (UTC: 18:30 previous day)
+            const utcMs = Date.UTC(Number(year), Number(month) - 1, Number(day), fallbackHours, fallbackMinutes) - IST_OFFSET_MS;
+            return new Date(utcMs);
+        }
+
+        const dmyMatch = rawValue.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+        if (dmyMatch) {
+            const [, day, month, year] = dmyMatch;
+            const utcMs = Date.UTC(Number(year), Number(month) - 1, Number(day), fallbackHours, fallbackMinutes) - IST_OFFSET_MS;
+            return new Date(utcMs);
+        }
+
+        // For full ISO strings (e.g., from server with 'Z'), JavaScript handles correctly.
+        // But to be safe, force IST interpretation for strings without timezone
+        if (!rawValue.endsWith('Z') && !rawValue.includes('+')) {
+            const parsed = new Date(rawValue);
+            if (!Number.isNaN(parsed.getTime())) {
+                // If it has time component, treat as IST
+                const utcMs = parsed.getTime() - IST_OFFSET_MS;
+                return new Date(utcMs);
+            }
+        }
+
+        const parsedDate = new Date(rawValue);
+        return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
+    }
 
     // Convert to the required format
-    function formatDateTimeLocal(isoDate) {
-        const date = new Date(isoDate);
-        const year = date.getFullYear();
-        const month = String(date.getMonth() + 1).padStart(2, '0'); // Months are zero-indexed
-        const day = String(date.getDate()).padStart(2, '0');
-        const hours = String(date.getHours()).padStart(2, '0');
-        const minutes = String(date.getMinutes()).padStart(2, '0');
+    function formatDateTimeLocal(dateInput, fallbackTime = "") {
+        const date = parseDateInput(dateInput, fallbackTime);
+        if (!date) return "";
+
+        // Convert to IST (UTC + 5:30) before extracting date/time components
+        // parseDateInput already stored dates in UTC representing IST,
+        // but for ISO strings with 'Z' the date is in true UTC.
+        // We normalize everything to IST here by adding the offset from true UTC.
+        const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+        const istTimestamp = date.getTime() + IST_OFFSET_MS;
+        const istDate = new Date(istTimestamp);
+
+        // Use getUTCFullYear/getUTCMonth/etc after offsetting for IST
+        const year = istDate.getUTCFullYear();
+        const month = String(istDate.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(istDate.getUTCDate()).padStart(2, '0');
+        const hours = String(istDate.getUTCHours()).padStart(2, '0');
+        const minutes = String(istDate.getUTCMinutes()).padStart(2, '0');
 
         return `${year}-${month}-${day}T${hours}:${minutes}`;
-    };
+    }
+
+    function getRegisteredOnValue() {
+        return formatDateTimeLocal(booking.createdAt || booking.date, booking.createdAt ? "" : booking.time);
+    }
+
+    function getCollectedOnValue() {
+        return formatDateTimeLocal(booking.date, booking.time);
+    }
 
     // Function to apply logic to each abnormal input field 
     const processInput = (input) => {
@@ -245,6 +2195,7 @@ async function loadfunction() {
             if (highLowSpan) highLowSpan.textContent = "";
         }
     };
+    window.__labReportProcessInput = processInput;
 
     // --- Text reference dropdown state/helpers ---
     const textDropdownState = {
@@ -254,17 +2205,45 @@ async function loadfunction() {
         hoverTimer: null,
     };
 
-    // Keep the existing form flow intact while allowing Enter to advance through data-entry fields.
+    // Keep the existing form flow intact while allowing Enter/Tab to skip formula fields.
     document.addEventListener(
         "keydown",
         (event) => {
-            if (event.key !== "Enter") return;
-            if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
+            const isEnterKey = event.key === "Enter";
+            const isTabKey = event.key === "Tab";
+            if (!isEnterKey && !isTabKey) return;
+            if ((isEnterKey && event.shiftKey) || event.ctrlKey || event.altKey || event.metaKey) return;
             if (textDropdownState.activeDropdown) return;
-            if (!isEnterNavigationField(event.target)) return;
 
-            event.preventDefault();
-            focusNextEnterField(event.target);
+            const target = event.target instanceof HTMLElement ? event.target : null;
+            const valueInput = target?.closest?.(".value-input");
+            if (valueInput) {
+                const direction = isTabKey && event.shiftKey ? -1 : 1;
+                const moved = focusValueInputOrFinalButton(valueInput, direction);
+                if (isEnterKey || moved) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                }
+                return;
+            }
+
+            if (!isKeyboardNavigationField(event.target)) {
+                if (isEnterKey) {
+                    const finalButton = document.getElementById("finalBtn");
+                    if (finalButton && !finalButton.disabled) {
+                        event.preventDefault();
+                        finalButton.click();
+                    }
+                }
+                return;
+            }
+
+            const direction = isTabKey && event.shiftKey ? -1 : 1;
+            const moved = focusNextManualField(event.target, direction);
+
+            if (isEnterKey || moved) {
+                event.preventDefault();
+            }
         },
         true
     );
@@ -626,7 +2605,7 @@ async function loadfunction() {
     const previousContentMap = new Map(); // ✅ Global map for storing previous content
 
     const initEditor = (uniqueTestId, interpretation) => {
-        
+
 
         const editorElement = document.querySelector(`#editorContent-${uniqueTestId}`);
 
@@ -756,7 +2735,7 @@ async function loadfunction() {
                     previousContentMap.set(uniqueTestId, interpretation);
                 }
 
-                
+
 
                 // Toolbar ko editor ke upar manually add karo
                 const toolbarContainer = document.createElement('div');
@@ -866,7 +2845,7 @@ async function loadfunction() {
                 const defaultContent = previousContentMap.get(uniqueTestId);
                 if (defaultContent) {
                     setEditorContent(uniqueTestId, defaultContent);
-                    
+
                 } else {
                     showStatusMessage("No default content available", "warn");
                 }
@@ -879,7 +2858,7 @@ async function loadfunction() {
                 const previousContent = previousContentMap.get(`${uniqueTestId}_previous`);
                 if (previousContent) {
                     setEditorContent(uniqueTestId, previousContent);
-                    
+
                 } else {
                     showStatusMessage("No previous content available", "warn");
                 }
@@ -935,7 +2914,7 @@ async function loadfunction() {
             });
 
             if (!response.ok) {
-                
+
             }
 
             const responseData = await response.json();
@@ -974,7 +2953,7 @@ async function loadfunction() {
             // Apply template content
             setEditorContent(uniqueTestId, template.content);
 
-            
+
         });
 
         const deleteIcon = document.createElement("span");
@@ -1028,7 +3007,7 @@ async function loadfunction() {
         try {
             await editor.destroy();
             editorInstances.delete(uniqueTestId);
-            
+
         } catch (error) {
             console.error(`❌ Error destroying editor ${uniqueTestId}:`, error);
             // Forcefully delete from map even if destroy fails
@@ -1041,7 +3020,7 @@ async function loadfunction() {
         const section = document.createElement("div");
         section.classList.add("section");
 
-        
+
 
         // Table heading (only if not hidden)
         if (!hideCategory) {
@@ -1077,7 +3056,7 @@ async function loadfunction() {
         let previousContent = '';
         for (const test of data) {
             if (test.isDocumentedTest) {
-                
+
                 const uniqueTestId = `${test._id}`; // Combine test._id and test.order for unique ID
                 const row = document.createElement("tr");
                 row.setAttribute("data-order", test.order);
@@ -1196,7 +3175,7 @@ async function loadfunction() {
                 // Row for tests with multiple parameters
                 row.innerHTML = `
                 <td><input type="checkbox" id="pagebreak" name="pagebreak" tabindex="-1"></td>
-                <td class="test-name">${test.Name}</td>
+                <td class="test-name"><div class="test-name-cell">${test.Name}</div></td>
                 <td></td>
                 <td></td>
                 <td></td>
@@ -1210,7 +3189,7 @@ async function loadfunction() {
                     paramRow.setAttribute("data-order", test.order); // Set a data attribute for sorting
                     paramRow.innerHTML = `
         <td><input type="checkbox" id="pagebreak" name="pagebreak" tabindex="-1"></td>
-        <td style="padding-left: 20px;" class="test-name" id="parameters">${param.Para_name}</td>
+        <td style="padding-left: 20px;" class="test-name" id="parameters"><div class="test-name-cell">${param.Para_name}</div></td>
         <td class="unit">
             <div class="value-column">
                 <div class="formulaIcon"></div>
@@ -1220,6 +3199,7 @@ async function loadfunction() {
                         name="parameterName" 
                         data-test-id="${test._id}" 
                         data-param-id="${param._id || ""}" 
+                        data-master-param-key="${param.masterParameterKey || param._id || test._id || ('param_' + (param.Para_name || test.Name).toLowerCase().replace(/[^a-z0-9]/g, ''))}"
                         data-param-name="${param.Para_name}" 
                         data-reference-type="${(param.ValueType || (param.text ? "text" : "numeric") || "numeric").toString().toLowerCase()}" 
                         data-Shortname="${test.Short_name}" 
@@ -1252,9 +3232,10 @@ async function loadfunction() {
                     if (param.Para_name === "Basophils Percentage") {
                         paramRowCalc = document.createElement("tr");
                         paramRowCalc.setAttribute("data-order", test.order); // Set a data attribute for sorting
-                        paramRowCalc.className = "exclude";
+                        paramRowCalc.className = "exclude differential-total-row";
 
                         const paramRowDiv = document.createElement("td");
+                        paramRowDiv.className = "differential-total-cell";
                         paramRowDiv.setAttribute("colSpan", "4");
                         paramRowCalc.appendChild(paramRowDiv);
                     }
@@ -1293,7 +3274,7 @@ async function loadfunction() {
             } else {
                 row.innerHTML = `
     <td><input type="checkbox" id="pagebreak" name="pagebreak" tabindex="-1"></td>
-    <td class="test-name">${test.Name}</td>
+    <td class="test-name"><div class="test-name-cell">${test.Name}</div></td>
     <td class="unit">
         <div class="value-column">
             <div class="formulaIcon"></div>
@@ -1304,6 +3285,7 @@ async function loadfunction() {
                     class="value-input" 
                     data-test-id="${test._id}" 
                     data-param-id="${test.parameters?.[0]?._id || ""}" 
+                    data-master-param-key="${test.parameters?.[0]?.masterParameterKey || test.parameters?.[0]?._id || test._id || ('param_' + (test.parameters?.[0]?.Para_name || test.Name).toLowerCase().replace(/[^a-z0-9]/g, ''))}"
                     data-param-name="${test.parameters?.[0]?.Para_name || test.Name}" 
                     data-reference-type="${(test.parameters?.[0]?.ValueType || (test.parameters?.[0]?.text ? "text" : "numeric") || "numeric").toString().toLowerCase()}" 
                     data-Shortname="${test.Short_name}" 
@@ -1336,9 +3318,10 @@ async function loadfunction() {
                 if (test.Name === "Basophils Percentage") {
                     paramRowCalc = document.createElement("tr");
                     paramRowCalc.setAttribute("data-order", test.order); // Set a data attribute for sorting
-                    paramRowCalc.className = "exclude";
+                    paramRowCalc.className = "exclude differential-total-row";
 
                     const paramRowDiv = document.createElement("td");
+                    paramRowDiv.className = "differential-total-cell";
                     paramRowDiv.setAttribute("colSpan", "4");
                     paramRowCalc.appendChild(paramRowDiv);
                 }
@@ -1375,15 +3358,57 @@ async function loadfunction() {
 
             }
 
-            // Test-specific details - Use panel checks if in panel, else test's own checks
-            const shouldHideMethodInstrument = isPanel
-                ? parseStoredCheckboxFlag(panelDetails.hideMethodInstrument)
-                : parseStoredCheckboxFlag(test.hideMethodInstrument);
-            const shouldHideInterpretation = isPanel
-                ? parseStoredCheckboxFlag(panelDetails.hideInterpretation)
-                : parseStoredCheckboxFlag(test.hideInterpretation);
+            // Panel-level hide flags should hide details for all child tests,
+            // while unchecked panel flags should still respect each test's own hide setting.
+            const panelHideMethodInstrument = isPanel
+                ? panelDetails?.hideMethodInstrument
+                : false;
+            const testHideMethodInstrument = resolveStoredCheckboxFlag(
+                test.hideMethodInstrument,
+                test.hidemethodinstrument,
+                test.panelVariables?.hideMethodInstrument,
+                test.panelVariables?.hidemethodinstrument
+            );
+            const shouldHideMethodInstrument = panelHideMethodInstrument || testHideMethodInstrument;
 
-            if (!shouldHideMethodInstrument || !shouldHideInterpretation) {
+            const panelHideInterpretation = isPanel
+                ? resolveStoredCheckboxFlag(
+                    panelDetails?.hideInterpretation,
+                    panelDetails?.hideinterpretation,
+                    panelDetails?.panelVariables?.hideInterpretation,
+                    panelDetails?.panelVariables?.hideinterpretation
+                )
+                : false;
+            const testHideInterpretation = resolveStoredCheckboxFlag(
+                test.hideInterpretation,
+                test.hideinterpretation,
+                test.panelVariables?.hideInterpretation,
+                test.panelVariables?.hideinterpretation
+            );
+            const shouldHideInterpretation = panelHideInterpretation || testHideInterpretation;
+
+            const methodText = test.method.trim()? test.method.trim() : "";
+            const instrumentText = test.instrument.trim()? test.instrument.trim() : "";
+
+            const interpretationText = typeof test.interpretation === "string"
+                ? test.interpretation.trim()
+                : (typeof test.panelVariables?.interpretation === "string" ? test.panelVariables.interpretation.trim() : "");
+
+            const detailBlocks = [];
+
+            if (!shouldHideMethodInstrument) {
+                if (methodText) {
+                    detailBlocks.push(`<p class="methods">Method: ${methodText}</p>`);
+                }
+                if (instrumentText) {
+                    detailBlocks.push(`<p class="methods">Instrument: ${instrumentText}</p>`);
+                }
+            }
+            if (!shouldHideInterpretation && interpretationText) {
+                detailBlocks.push(`<p>${interpretationText}</p>`);
+            }
+
+            if (detailBlocks.length > 0) {
                 const detailsRow = document.createElement("tr");
                 detailsRow.setAttribute("data-order", test.order);
                 const detailsCell = document.createElement("td");
@@ -1391,19 +3416,7 @@ async function loadfunction() {
 
                 const detailsDiv = document.createElement("div");
                 detailsDiv.classList.add("test-details");
-
-                if (!shouldHideMethodInstrument) {
-                    detailsDiv.innerHTML += `
-                    ${test.method ? `<p class="methods">Method: ${test.method || ""}</p>` : ""}
-                    ${test.instrument ? `<p class="methods">Instrument: ${test.instrument || ""}</p>` : ""}
-                `;
-                }
-
-                if (!shouldHideInterpretation) {
-                    detailsDiv.innerHTML += `
-                    <p>${test.interpretation || ""}</p>
-                `;
-                }
+                detailsDiv.innerHTML = detailBlocks.join("");
 
                 const pagebreakCell = document.createElement("td");
                 pagebreakCell.innerHTML = '<input type="checkbox" id="pagebreak" name="pagebreak" tabindex="-1">';
@@ -1510,34 +3523,6 @@ async function loadfunction() {
     function generateRandomResults() {
         const tablecontainer = document.querySelectorAll("#tables-container .section table tbody tr:not(.exclude)");
 
-        // Formula wale tests ki list (jo calculate hote hain)
-        const formulaBasedTests = [
-            "Neutrophils-Absolute Count",
-            "Lymphocytes-Absolute Count",
-            "Eosinophil-Absolute Count",
-            "Monocyte- Absolute Count",
-            "Basophils-Absolute Count",
-            "Neutrophil Lymphocyte Ratio",
-            "Mean Corpuscular Volume (MCV)",
-            "Mean Corpuscular Hemoglobin (MCH)",
-            "Mean Corpuscular Hemoglobin Concentration (MCHC)",
-            "VLDL Cholesterol",
-            "LDL Cholesterol",
-            "LDL / HDL Ratio",
-            "Total Cholesterol / HDL",
-            "TG / HDL",
-            "Non-HDL cholesterol",
-            "Serum Bilirubin (Indirect)",
-            "Globulin",
-            "A/G Ratio",
-            "Sgot/Sgpt Ratio Formula",
-            "BUN",
-            "Urea / Creatinine Ratio",
-            "BUN / Creatinine Ratio",
-            "Transferrin Saturation",
-            "Estimated average glucose"
-        ];
-
         tablecontainer.forEach((row) => {
             const input = row.querySelector(".value-input");
 
@@ -1554,7 +3539,7 @@ async function loadfunction() {
             }
 
             // Check karo ki ye formula-based test hai ya nahi
-            const isFormulaTest = formulaBasedTests.includes(testId) ||
+            const isFormulaTest = input.dataset.formulaField === "true" ||
                 row.querySelector('.formulaIcon .icon');
 
             // Agar formula test hai to skip karo
@@ -1568,7 +3553,7 @@ async function loadfunction() {
 
             // Agar lowerRange ya upperRange valid nahi hai to skip karo
             if (isNaN(lowerRange) || isNaN(upperRange)) {
-                
+
                 return;
             }
 
@@ -1598,75 +3583,6 @@ async function loadfunction() {
         generateRandomResults();
     });
 
-    function addIconsToMatchingRows() {
-        const matchingValues = {
-            "Neutrophils-Absolute Count": "(Total Leucocytes Count/100)*Neutrophils Percentage",
-            "Lymphocytes-Absolute Count": "(Lymphocyte Percentage/100)*Total Leucocytes Count",
-            "Eosinophil-Absolute Count": "(Eosinophils Percentage/100)*Total Leucocytes Count",
-            "Monocyte- Absolute Count": "(Monocytes Percentage/100)*Total Leucocytes Count",
-            "Basophils-Absolute Count": "(Basophils Percentage/100)*Total Leucocytes Count",
-            "Neutrophil Lymphocyte Ratio": "Neutrophils-Absolute Count/Lymphocytes-Absolute Count",
-            "Mean Corpuscular Volume (MCV)": "Hematocrit (HCT)*10/Total Red Blood Cell Count",
-            "Mean Corpuscular Hemoglobin (MCH)": "Hemoglobin*10/Total Red Blood Cell Count",
-            "Mean Corpuscular Hemoglobin Concentration (MCHC)": "Hemoglobin*100/Hematocrit (HCT)",
-            "VLDL Cholesterol": "Triglycerides/5",
-            "LDL Cholesterol": "Total Cholesterol-HDL Cholesterol-VLDL Cholesterol",
-            "LDL / HDL Ratio": "LDL Cholesterol / HDL Cholesterol",
-            "Total Cholesterol / HDL": "Total Cholesterol/HDL Cholesterol",
-            "TG / HDL": "Triglycerides/HDL Cholesterol",
-            "Non-HDL cholesterol": "Total Cholesterol-HDL Cholesterol",
-            "Serum Bilirubin (Indirect)": "Serum Bilirubin (Total) - Serum Bilirubin (Direct)",
-            "Globulin": "Serum Protein-Serum Albumin",
-            "A/G Ratio": "Serum Albumin/Globulin",
-            "Sgot/Sgpt Ratio Formula": "SGPT (ALT)/SGOT (AST)",
-            "BUN": "Serum Urea * 0.467",
-            "Urea / Creatinine Ratio": "Serum Urea / Serum Creatinine",
-            "BUN / Creatinine Ratio": "BUN / Serum Creatinine",
-            "Transferrin Saturation": "Iron * 100 / Total Iron Binding Capacity",
-            "Estimated average glucose": "28.7*GLYCATED HAEMOGLOBIN(HbA1c)-46.7",
-            "index": "Prothrombin Time Patient Value/Prothrombin Time Control Value"
-        };
-
-        const rows = document.querySelectorAll(".table tbody tr[data-order]");
-
-        rows.forEach((row) => {
-            const textColumn = row.children[1];
-            const valueColumn = row.querySelector(".formulaIcon");
-
-            if (textColumn && valueColumn) {
-                const text = textColumn.textContent.trim();
-
-                if (matchingValues[text]) {
-                    // Prevent duplicate
-                    if (valueColumn.querySelector(".icon")) return;
-
-                    // Create icon span
-                    const icon = document.createElement("span");
-                    icon.classList.add("icon");
-                    icon.innerHTML = `<i class="fa-solid fa-calculator"></i>`;
-                    icon.style.cursor = "pointer";
-                    icon.style.position = "relative";
-
-                    // Tooltip box
-                    const tooltip = document.createElement("div");
-                    tooltip.classList.add("tooltip-box");
-                    tooltip.textContent = matchingValues[text];
-
-                    // Hover events
-                    icon.addEventListener("mouseenter", () => {
-                        tooltip.style.display = "block";
-                    });
-                    icon.addEventListener("mouseleave", () => {
-                        tooltip.style.display = "none";
-                    });
-
-                    icon.appendChild(tooltip);
-                    valueColumn.appendChild(icon);
-                }
-            }
-        });
-    }
-
     // Set up listeners for parameter formulas 
     function setupListeners() {
         if (valueInputListenersBound) return;
@@ -1682,8 +3598,8 @@ async function loadfunction() {
             openTextDropdown(input);
         });
 
-        // Event delegation: single listener for all dynamic .value-input fields.
-        tablesContainer.addEventListener("input", (event) => {
+        // Event delegation on document: ensures listeners are NEVER dropped even if container innerHTML re-renders
+        document.addEventListener("input", (event) => {
             const input = event.target.closest(".value-input");
             if (!input) return;
             if (isTextReferenceInput(input) && event.isTrusted) {
@@ -1693,307 +3609,124 @@ async function loadfunction() {
             handleInputChange(input);
         });
 
+        document.addEventListener("change", (event) => {
+            const input = event.target.closest(".value-input");
+            if (!input) return;
+            processInput(input);
+            handleInputChange(input);
+        });
+
         valueInputListenersBound = true;
     }
 
-    const inputElementCache = new Map();
-    const getCachedInput = (selector) => {
-        const cached = inputElementCache.get(selector);
-        if (cached && cached.isConnected) return cached;
-        const next = document.querySelector(selector);
-        if (next) inputElementCache.set(selector, next);
-        return next;
-    };
+    function getDifferentialPercentageInputs() {
+        return Array.from(document.querySelectorAll(".value-input")).filter((input) => {
+            const parameterName =
+                input.getAttribute("data-param-name") ||
+                input.getAttribute("data-id") ||
+                "";
+
+            return DIFFERENTIAL_PERCENTAGE_FIELD_SET.has(
+                normalizeFieldIdentity(parameterName)
+            );
+        });
+    }
+
+    function getDifferentialTotalCell() {
+        return document.querySelector("tr.differential-total-row td");
+    }
+
+    function getDifferentialPercentageState() {
+        const inputs = getDifferentialPercentageInputs();
+        const hasExpectedInputs = inputs.length === DIFFERENTIAL_PERCENTAGE_FIELD_NAMES.length;
+        const hasAnyValue = inputs.some((input) => input.value.trim() !== "");
+        const total = inputs.reduce((sum, input) => sum + (parseFloat(input.value) || 0), 0);
+        const isComplete = inputs.length > 0 && inputs.every((input) => input.value.trim() !== "");
+        const isValid =
+            hasExpectedInputs &&
+            isComplete &&
+            Math.abs(total - DIFFERENTIAL_TOTAL_TARGET) <= DIFFERENTIAL_TOTAL_TOLERANCE;
+
+        return {
+            inputs,
+            total,
+            hasAnyValue,
+            hasExpectedInputs,
+            isComplete,
+            isValid,
+        };
+    }
+
+    function updateDifferentialTotalCell(state) {
+        const totalCell = getDifferentialTotalCell();
+        if (!totalCell) return;
+
+        totalCell.textContent = state.inputs.length
+            ? `Total: ${state.total.toFixed(2)} / ${DIFFERENTIAL_TOTAL_TARGET.toFixed(2)}`
+            : "";
+        totalCell.classList.toggle("is-valid", state.hasAnyValue && state.isValid);
+        totalCell.classList.toggle(
+            "is-invalid",
+            state.hasAnyValue && state.hasExpectedInputs && !state.isValid
+        );
+    }
+
+    function focusDifferentialPercentageInputs(inputs) {
+        if (!inputs.length) return;
+
+        const targetInput =
+            inputs.find((input) => input.value.trim() === "" || Number.isNaN(parseFloat(input.value))) ||
+            inputs[0];
+        const targetRow = targetInput.closest("tr") || targetInput;
+
+        smoothScrollTo(targetRow);
+        window.setTimeout(() => {
+            targetInput.focus({ preventScroll: true });
+            if (typeof targetInput.select === "function") {
+                targetInput.select();
+            }
+        }, 220);
+    }
+
+    function syncDifferentialPercentageValidation(options = {}) {
+        const { focusInvalid = false, showMessage = false } = options;
+        const state = getDifferentialPercentageState();
+        const shouldHighlight = state.hasAnyValue && state.hasExpectedInputs && !state.isValid;
+
+        updateDifferentialTotalCell(state);
+
+        state.inputs.forEach((input) => {
+            input.classList.toggle("value-input--aggregate-error", shouldHighlight);
+            input.closest("tr")?.classList.toggle("aggregate-invalid-row", shouldHighlight);
+        });
+
+        if (!shouldHighlight) {
+            return true;
+        }
+
+        if (showMessage) {
+            showStatusMessage(
+                `Differential percentage total must be exactly 100 before final save. Current total: ${state.total.toFixed(2)}.`,
+                "warn",
+                4200
+            );
+        }
+
+        if (focusInvalid) {
+            focusDifferentialPercentageInputs(state.inputs);
+        }
+
+        return false;
+    }
 
     // Handle input changes and update formula row
     function handleInputChange(resultInputs) {
-        // Use cached input lookup to avoid repeated full-document querySelector calls.
-        const getElement = (selector) => getCachedInput(selector);
-
-        const TotalLeucocytesCount = getElement('input[data-id="Total Leucocytes Count"]');
-        const NeutrophilsPercentage = getElement('input[data-id="Neutrophils Percentage"]');
-        const NeutrophilsAbsoluteCount = getElement('input[data-id="Neutrophils-Absolute Count"]');
-        const LymphocytePercentage = getElement('input[data-id="Lymphocyte Percentage"]');
-        const LymphocytesAbsoluteCount = getElement('input[data-id="Lymphocytes-Absolute Count"]');
-        const EosinophilAbsoluteCount = getElement('input[data-id="Eosinophil-Absolute Count"]');
-        const EosinophilsPercentage = getElement('input[data-id="Eosinophils Percentage"]');
-        const MonocyteAbsoluteCount = getElement('input[data-id="Monocyte- Absolute Count"]');
-        const MonocytesPercentage = getElement('input[data-id="Monocytes Percentage"]');
-        const BasophilsAbsoluteCount = getElement('input[data-id="Basophils-Absolute Count"]');
-        const BasophilsPercentage = getElement('input[data-id="Basophils Percentage"]');
-        const NeutrophilLymphocyteRatio = getElement('input[data-id="683e964500d2c15788fb633a"]');
-        const MeanCorpuscularVolumeMCV = getElement('input[data-id="Mean Corpuscular Volume (MCV)"]');
-        const HematocritHCT = getElement('input[data-id="Hematocrit (HCT)"]');
-        const TotalRedBloodCellCount = getElement('input[data-id="Total Red Blood Cell Count"]');
-        const MeanCorpuscularHemoglobinMCH = getElement('input[data-id="Mean Corpuscular Hemoglobin (MCH)"]');
-        const Hemoglobin = getElement('input[data-id="Hemoglobin"]');
-        const MeanCorpuscularHemoglobinConcentrationMCHC = getElement('input[data-id="Mean Corpuscular Hemoglobin Concentration (MCHC)"]');
-        const VLDLCholesterol = getElement('input[data-id="VLDL Cholesterol"]');
-        const Triglycerides = getElement('input[data-id="Triglycerides"]');
-        const LDLCholesterol = getElement('input[data-id="LDL Cholesterol"]');
-        const TotalCholesterol = getElement('input[data-id="Total Cholesterol"]');
-        const HDLCholesterol = getElement('input[data-id="HDL Cholesterol"]');
-        const LDLHDL = getElement('input[data-id="LDL / HDL Ratio"]');
-        const TotalCholesterolHDL = getElement('input[data-id="Total Cholesterol / HDL"]');
-        const TGHDL = getElement('input[data-id="TG / HDL"]');
-        const NonHDLcholesterol = getElement('input[data-id="Non-HDL cholesterol"]');
-        const SerumBilirubinIndirect = getElement('input[data-id="Serum Bilirubin (Indirect)"]');
-        const SerumBilirubinTotal = getElement('input[data-id="Serum Bilirubin (Total)"]');
-        const SerumBilirubinDirect = getElement('input[data-id="Serum Bilirubin (Direct)"]');
-        const Globulin = getElement('input[data-id="Globulin"]');
-        const SerumProtein = getElement('input[data-id="Serum Protein"]');
-        const SerumAlbumin = getElement('input[data-id="Serum Albumin"]');
-        const AGRatio = getElement('input[data-id="A/G Ratio"]');
-        const SgotSgptRatioFormula = getElement('input[data-id="SGOT/SGPT RATIO"]');
-        const SGPTALT = getElement('input[data-id="SGPT (ALT)"]');
-        const SGOTAST = getElement('input[data-id="SGOT (AST)"]');
-        const BUN = getElement('input[data-id="BUN"]');
-        const SerumUrea = getElement('input[data-id="Serum Urea"]');
-        const UreaCreatinineRatio = getElement('input[data-id="Urea / Creatinine Ratio"]');
-        const SerumCreatinine = getElement('input[data-id="Serum Creatinine"]');
-        const BUNCreatinineRatio = getElement('input[data-id="BUN / Creatinine Ratio"]');
-        const TransferrinSaturation = getElement('input[data-id="Transferrin Saturation"]');
-        const Iron = getElement('input[data-id="Iron"]');
-        const TotalIronBindingCapacity = getElement('input[data-id="Total Iron Binding Capacity"]');
-        const Estimatedaverageglucose = getElement('input[data-id="Estimatedaverageglucose"]');
-        const GLYCATEDHAEMOGLOBINHbA1c = getElement('input[data-id="GLYCATED HAEMOGLOBIN(HbA1c)"]');
-        const calculationRow = getElement('tr.exclude td');
-
-        // Helper function to safely get value
-        const getValue = (element) => {
-            if (!element) return 0;
-            return parseFloat(element.value) || 0;
-        };
-
-        // Helper function to safely set value
-        const setValue = (element, value) => {
-            if (!element) return;
-            element.value = value.toFixed(2);
-            processInput(element);
-        };
-
-        // Check if resultInputs is a formula field
-        const formulaFields = [
-            VLDLCholesterol, BUNCreatinineRatio, UreaCreatinineRatio, BUN, SgotSgptRatioFormula,
-            AGRatio, Globulin, SerumBilirubinIndirect, NonHDLcholesterol, TGHDL, TotalCholesterolHDL,
-            LDLHDL, LDLCholesterol, MeanCorpuscularHemoglobinConcentrationMCHC,
-            MeanCorpuscularHemoglobinMCH, MeanCorpuscularVolumeMCV, NeutrophilLymphocyteRatio,
-            NeutrophilsAbsoluteCount, LymphocytesAbsoluteCount, EosinophilAbsoluteCount,
-            MonocyteAbsoluteCount, BasophilsAbsoluteCount
-        ].filter(el => el !== null); // Filter out null values
-
-        if (formulaFields.includes(resultInputs)) {
-            // BUN / Creatinine Ratio
-            if (SerumCreatinine && BUN && BUNCreatinineRatio) {
-                const bunValue = getValue(BUN);
-                const creatinineValue = getValue(SerumCreatinine);
-                if (creatinineValue !== 0) {
-                    setValue(BUNCreatinineRatio, bunValue / creatinineValue);
-                }
-            }
-
-            // LDL Cholesterol
-            if (LDLCholesterol && TotalCholesterol && VLDLCholesterol && HDLCholesterol) {
-                const totalChol = getValue(TotalCholesterol);
-                const hdlChol = getValue(HDLCholesterol);
-                const vldlChol = getValue(VLDLCholesterol);
-                setValue(LDLCholesterol, totalChol - hdlChol - vldlChol);
-            }
-            return;
-        }
-
-        // Estimated Average Glucose
-        if (Estimatedaverageglucose && GLYCATEDHAEMOGLOBINHbA1c) {
-            const hba1c = getValue(GLYCATEDHAEMOGLOBINHbA1c);
-            if (hba1c !== 0) {
-                setValue(Estimatedaverageglucose, (28.7 * hba1c) - 46.7);
-            }
-        }
-
-        // BUN from Urea
-        if (BUN && SerumUrea) {
-            const urea = getValue(SerumUrea);
-            setValue(BUN, urea * 0.467);
-        }
-
-        // Total Percentage Calculation
-        if (NeutrophilsPercentage && LymphocytePercentage && EosinophilsPercentage &&
-            MonocytesPercentage && BasophilsPercentage && calculationRow) {
-            const total = getValue(NeutrophilsPercentage) + getValue(LymphocytePercentage) +
-                getValue(EosinophilsPercentage) + getValue(MonocytesPercentage) +
-                getValue(BasophilsPercentage);
-            calculationRow.innerText = `Total: ${total.toFixed(2)}`;
-        }
-
-        // Urea / Creatinine Ratio
-        if (SerumUrea && SerumCreatinine && UreaCreatinineRatio) {
-            const urea = getValue(SerumUrea);
-            const creatinine = getValue(SerumCreatinine);
-            if (creatinine !== 0) {
-                setValue(UreaCreatinineRatio, urea / creatinine);
-            }
-        }
-
-        // Transferrin Saturation
-        if (TransferrinSaturation && Iron && TotalIronBindingCapacity) {
-            const iron = getValue(Iron);
-            const tibc = getValue(TotalIronBindingCapacity);
-            if (tibc !== 0) {
-                setValue(TransferrinSaturation, (iron * 100) / tibc);
-            }
-        }
-
-        // SGOT/SGPT Ratio
-        if (SGPTALT && SGOTAST && SgotSgptRatioFormula) {
-            const sgpt = getValue(SGPTALT);
-            const sgot = getValue(SGOTAST);
-            if (sgot !== 0) {
-                setValue(SgotSgptRatioFormula, sgpt / sgot);
-            }
-        }
-
-        // A/G Ratio
-        if (Globulin && AGRatio && SerumAlbumin) {
-            const albumin = getValue(SerumAlbumin);
-            const globulin = getValue(Globulin);
-            if (globulin !== 0) {
-                setValue(AGRatio, albumin / globulin);
-            }
-        }
-
-        // Globulin
-        if (Globulin && SerumProtein && SerumAlbumin) {
-            const protein = getValue(SerumProtein);
-            const albumin = getValue(SerumAlbumin);
-            setValue(Globulin, protein - albumin);
-        }
-
-        // Serum Bilirubin (Indirect)
-        if (SerumBilirubinDirect && SerumBilirubinTotal && SerumBilirubinIndirect) {
-            const total = getValue(SerumBilirubinTotal);
-            const direct = getValue(SerumBilirubinDirect);
-            setValue(SerumBilirubinIndirect, total - direct);
-        }
-
-        // Non-HDL Cholesterol
-        if (NonHDLcholesterol && TotalCholesterol && HDLCholesterol) {
-            const total = getValue(TotalCholesterol);
-            const hdl = getValue(HDLCholesterol);
-            setValue(NonHDLcholesterol, total - hdl);
-        }
-
-        // TG / HDL Ratio
-        if (TGHDL && Triglycerides && HDLCholesterol) {
-            const tg = getValue(Triglycerides);
-            const hdl = getValue(HDLCholesterol);
-            if (hdl !== 0) {
-                setValue(TGHDL, tg / hdl);
-            }
-        }
-
-        // Total Cholesterol / HDL Ratio
-        if (TotalCholesterolHDL && TotalCholesterol && HDLCholesterol) {
-            const total = getValue(TotalCholesterol);
-            const hdl = getValue(HDLCholesterol);
-            if (hdl !== 0) {
-                setValue(TotalCholesterolHDL, total / hdl);
-            }
-        }
-
-        // LDL / HDL Ratio
-        if (LDLCholesterol && LDLHDL && HDLCholesterol) {
-            const ldl = getValue(LDLCholesterol);
-            const hdl = getValue(HDLCholesterol);
-            if (hdl !== 0) {
-                setValue(LDLHDL, ldl / hdl);
-            }
-        }
-
-        // LDL Cholesterol (recalculate if needed)
-        if (LDLCholesterol && TotalCholesterol && VLDLCholesterol && HDLCholesterol) {
-            const total = getValue(TotalCholesterol);
-            const hdl = getValue(HDLCholesterol);
-            const vldl = getValue(VLDLCholesterol);
-            setValue(LDLCholesterol, total - hdl - vldl);
-        }
-
-        // VLDL Cholesterol
-        if (VLDLCholesterol && Triglycerides) {
-            const tg = getValue(Triglycerides);
-            setValue(VLDLCholesterol, tg / 5);
-        }
-
-        // MCHC
-        if (MeanCorpuscularHemoglobinConcentrationMCHC && Hemoglobin && HematocritHCT) {
-            const hb = getValue(Hemoglobin);
-            const hct = getValue(HematocritHCT);
-            if (hct !== 0) {
-                setValue(MeanCorpuscularHemoglobinConcentrationMCHC, (hb * 100) / hct);
-            }
-        }
-
-        // MCH
-        if (MeanCorpuscularHemoglobinMCH && Hemoglobin && TotalRedBloodCellCount) {
-            const hb = getValue(Hemoglobin);
-            const rbc = getValue(TotalRedBloodCellCount);
-            if (rbc !== 0) {
-                setValue(MeanCorpuscularHemoglobinMCH, (hb * 10) / rbc);
-            }
-        }
-
-        // MCV
-        if (MeanCorpuscularVolumeMCV && HematocritHCT && TotalRedBloodCellCount) {
-            const hct = getValue(HematocritHCT);
-            const rbc = getValue(TotalRedBloodCellCount);
-            if (rbc !== 0) {
-                setValue(MeanCorpuscularVolumeMCV, (hct * 10) / rbc);
-            }
-        }
-
-        // Neutrophil Lymphocyte Ratio
-        if (NeutrophilLymphocyteRatio && NeutrophilsAbsoluteCount && LymphocytesAbsoluteCount) {
-            const neutrophils = getValue(NeutrophilsAbsoluteCount);
-            const lymphocytes = getValue(LymphocytesAbsoluteCount);
-            if (lymphocytes !== 0) {
-                setValue(NeutrophilLymphocyteRatio, neutrophils / lymphocytes);
-            }
-        }
-
-        // Basophils Absolute Count
-        if (BasophilsPercentage && BasophilsAbsoluteCount && TotalLeucocytesCount) {
-            const percentage = getValue(BasophilsPercentage);
-            const wbc = getValue(TotalLeucocytesCount);
-            setValue(BasophilsAbsoluteCount, (percentage / 100) * wbc);
-        }
-
-        // Monocytes Absolute Count
-        if (MonocytesPercentage && MonocyteAbsoluteCount && TotalLeucocytesCount) {
-            const percentage = getValue(MonocytesPercentage);
-            const wbc = getValue(TotalLeucocytesCount);
-            setValue(MonocyteAbsoluteCount, (percentage / 100) * wbc);
-        }
-
-        // Eosinophils Absolute Count
-        if (EosinophilsPercentage && EosinophilAbsoluteCount && TotalLeucocytesCount) {
-            const percentage = getValue(EosinophilsPercentage);
-            const wbc = getValue(TotalLeucocytesCount);
-            setValue(EosinophilAbsoluteCount, (percentage / 100) * wbc);
-        }
-
-        // Lymphocytes Absolute Count
-        if (LymphocytesAbsoluteCount && LymphocytePercentage && TotalLeucocytesCount) {
-            const percentage = getValue(LymphocytePercentage);
-            const wbc = getValue(TotalLeucocytesCount);
-            setValue(LymphocytesAbsoluteCount, (percentage / 100) * wbc);
-        }
-
-        // Neutrophils Absolute Count
-        if (NeutrophilsAbsoluteCount && NeutrophilsPercentage && TotalLeucocytesCount) {
-            const percentage = getValue(NeutrophilsPercentage);
-            const wbc = getValue(TotalLeucocytesCount);
-            setValue(NeutrophilsAbsoluteCount, (percentage / 100) * wbc);
-        }
+        syncDifferentialPercentageValidation();
+        if (!resultInputs) return;
+        const changedMasterKey = String(resultInputs.dataset?.masterParamKey || resultInputs.dataset?.paramId || "");
+        recalculateFormulaCascadeFromParam(changedMasterKey, resultInputs);
     }
+    window.__labReportHandleInputChange = handleInputChange;
 
     // for order in sequence heading, pannels, tests, tables
     async function groupTablesByCategory() {
@@ -2091,7 +3824,7 @@ async function loadfunction() {
     async function renderData() {
         // const data = await sendValueToDatabase();
         if (!testpanels) return;
-        
+
 
         const { singleTests, panels } = testpanels;
 
@@ -2116,9 +3849,84 @@ async function loadfunction() {
 
             singleTestsByCategoryMap.get(key).tests.push(test);
         });
+
+        // Ensure panels are reflected in uniqueTestArray2 with their latest names from DB
+        if (panels && panels.length > 0) {
+            panels.forEach((panel) => {
+                if (!panel?.name) return;
+                const panelId = String(panel._id || "");
+                const origId = String(panel.originalPanelId || "");
+
+                // Check if any booking row had this panel ID
+                (booking?.tableData || []).forEach(row => {
+                    const matches = (row.ids || []).some(t => String(t?.id) === panelId || String(t?.id) === origId);
+                    if (matches && row.testName) {
+                        row.testName.split(",").map(s => s.trim()).filter(Boolean).forEach(oldName => {
+                            const oldIndex = uniquetestArray2.indexOf(oldName);
+                            if (oldIndex > -1 && oldName !== panel.name) {
+                                uniquetestArray2.splice(oldIndex, 1);
+                                if (!uniquetestArray2.includes(panel.name)) {
+                                    uniquetestArray2.push(panel.name);
+                                }
+                            }
+                        });
+                    }
+                });
+
+                if (!uniquetestArray2.includes(panel.name)) {
+                    const isBooked = (testpanels?.barcodes?.barcodes || []).some(b => 
+                        (b.testIds || []).some(t => String(t?.id) === panelId || String(t?.id) === origId)
+                    ) || (booking?.tableData || []).some(row => 
+                        (row.ids || []).some(t => String(t?.id) === panelId || String(t?.id) === origId)
+                    );
+
+                    if (isBooked) {
+                        uniquetestArray2.push(panel.name);
+                    }
+                }
+            });
+        }
+
+        // Ensure packages are reflected in uniqueTestArray2 with their latest names from DB
+        if (Array.isArray(testpanels?.packages) && testpanels.packages.length > 0) {
+            testpanels.packages.forEach((pkg) => {
+                if (!pkg?.packageName) return;
+                const pkgId = String(pkg._id || "");
+                const origId = String(pkg.originalPackageId || "");
+
+                (booking?.tableData || []).forEach(row => {
+                    const matches = (row.ids || []).some(t => String(t?.id) === pkgId || String(t?.id) === origId);
+                    if (matches && row.testName) {
+                        row.testName.split(",").map(s => s.trim()).filter(Boolean).forEach(oldName => {
+                            const oldIndex = uniquetestArray2.indexOf(oldName);
+                            if (oldIndex > -1 && oldName !== pkg.packageName) {
+                                uniquetestArray2.splice(oldIndex, 1);
+                                if (!uniquetestArray2.includes(pkg.packageName)) {
+                                    uniquetestArray2.push(pkg.packageName);
+                                }
+                            }
+                        });
+                    }
+                });
+
+                if (!uniquetestArray2.includes(pkg.packageName)) {
+                    const isBooked = (testpanels?.barcodes?.barcodes || []).some(b => 
+                        (b.testIds || []).some(t => String(t?.id) === pkgId || String(t?.id) === origId)
+                    ) || (booking?.tableData || []).some(row => 
+                        (row.ids || []).some(t => String(t?.id) === pkgId || String(t?.id) === origId)
+                    );
+
+                    if (isBooked) {
+                        uniquetestArray2.push(pkg.packageName);
+                    }
+                }
+            });
+        }
+
+        uniquetestArray2 = [...new Set(uniquetestArray2.map(s => String(s).trim()).filter(Boolean))];
         const singleTestsByCategory = Array.from(singleTestsByCategoryMap.values());
 
-        
+
 
         const matchedCategories = new Set();
 
@@ -2155,16 +3963,23 @@ async function loadfunction() {
         }
 
         await groupTablesByCategory();
-
-        addIconsToMatchingRows();
     }
 
     await renderData();
+    await loadTenantFormulas();
+    addIconsToMatchingRows();
+    recalculateAllFormulas();
     setupListeners();
     addInputListeners();
+    syncDifferentialPercentageValidation();
     await lisresult();
     await fetchEnteredResult();
-    // await fetchEnteredResult();
+
+    // Extra safety pass in next frames to guarantee all dynamically rendered or animated rows are attached
+    requestAnimationFrame(() => {
+        addIconsToMatchingRows();
+        recalculateAllFormulas();
+    });
 
     // for fetching previous results
     async function fetchEnteredResult() {
@@ -2201,6 +4016,7 @@ async function loadfunction() {
                             input.dataset.isAbnormal = matchingData.isAbnormal ? "true" : "false";
                         }
                         processInput(input);
+                        handleInputChange(input);
                     }
                 }
 
@@ -2222,6 +4038,9 @@ async function loadfunction() {
                 }
             }
 
+            syncDifferentialPercentageValidation();
+            addIconsToMatchingRows();
+            recalculateAllFormulas();
         } catch (error) {
             console.error("Error fetching entered results:", error);
         }
@@ -2254,13 +4073,12 @@ async function loadfunction() {
                 })
 
                 const data = await response.json();
-                
+
 
                 if (!data.data) {
                     bootalert.classList.remove("fade", "alert-success");
                     bootalert.classList.add("show", "alert-danger");
                     bootalert.textContent = data.message;
-                    showStatusMessage(data.message || "No LIS data found.", "error");
                     setTimeout(() => {
                         bootalert.classList.remove("show");
                         bootalert.classList.add("fade");
@@ -2277,19 +4095,16 @@ async function loadfunction() {
                     bootalert.classList.remove("fade", "alert-danger");
                     bootalert.classList.add("show", "alert-success");
                     bootalert.textContent = data.message;
-                    showStatusMessage(data.message || "LIS results loaded successfully.", "success");
                 } else {
                     bootalert.classList.remove("fade", "alert-success");
                     bootalert.classList.add("show", "alert-danger");
                     bootalert.textContent = data.message;
-                    showStatusMessage(data.message || "LIS results not available.", "warn");
                 }
 
             } catch (error) {
                 bootalert.classList.remove("fade", "alert-success");
                 bootalert.classList.add("show", "alert-danger");
                 bootalert.textContent = error.message;
-                showStatusMessage(error.message || "Failed to fetch LIS results.", "error");
             } finally {
                 getresultbutton.disabled = false;
             }
@@ -2306,7 +4121,7 @@ async function loadfunction() {
                 value.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
 
                 value.forEach((element) => {
-                    
+
                     for (const row of tablecontainer) {
                         const input = row.querySelector(".value-input");
 
@@ -2326,24 +4141,24 @@ async function loadfunction() {
         }
     }
 
+    let reportedOnManuallyEdited = false;
+
+    function getCurrentReportedOnValue() {
+        return formatDateTimeLocal(new Date());
+    }
+
     // for seeting default time in input fields
     function defaultdateandtime() {
-        const now = new Date();
-        const year = now.getFullYear();
-        const month = String(now.getMonth() + 1).padStart(2, '0'); // Months are 0-based, so we add 1
-        const day = String(now.getDate()).padStart(2, '0');
-        const hours = String(now.getHours()).padStart(2, '0');
-        const minutes = String(now.getMinutes()).padStart(2, '0');
+        const reportedOnInput = document.getElementById('reportedOn');
+        if (!reportedOnInput) return;
 
-        // Format the date and time to YYYY-MM-DDTHH:MM
-        const formattedDateTime = `${year}-${month}-${day}T${hours}:${minutes}`;
-
-        document.getElementById('reportedOn').value = formattedDateTime;
-    };
+        reportedOnInput.value = getCurrentReportedOnValue();
+        reportedOnManuallyEdited = false;
+    }
 
     // for populating patient information
     function populateHea() {
-        
+
         document.getElementById("booking-registeration-number").innerText = booking.bookingId;
         // document.getElementById("booking-registeration-number2").innerText = reg_id;
         const patientdetails = document.createElement("div");
@@ -2353,16 +4168,16 @@ async function loadfunction() {
                 <div class="infor-div"><div class="tags">Age / Sex:</div> <div class="value-header">${booking.year} / ${booking.gender}</div></div>
                 <div class="infor-div"><div class="tags">Referred By:</div> <div class="value-header">${booking.doctorName}</div></div>
                 <div class="infor-div"><div class="tags">Lab Name:</div> <div class="value-header">${booking.labName}</div></div>
-                <div class="infor-div"><div class="tags">Investigations:</div> <div class="value-header">${uniquetestArray2}</div></div>
+                <div class="infor-div"><div class="tags">Investigations:</div> <div class="value-header">${Array.isArray(uniquetestArray2) ? uniquetestArray2.join(", ") : uniquetestArray2}</div></div>
             </div>
             <div class="right2">
                 <div class="registered-div2">
                     <div class="registeration-tag2">Registered on:</div>
-                    <span style = "text-align: center;"> ${new Date(booking.date).toLocaleDateString().split('T')[0]}    ${booking.time}</span>
+                    <input name="DateTime" type="datetime-local" id="registeredOn" value="${getRegisteredOnValue()}">
                 </div>
                 <div class="registered-div2">
                     <div class="registeration-tag2">Collected on:</div>
-                    <input name="DateTime" type="datetime-local" id="collectedOn" name="collectedOn" value="${new Date(booking.date).toISOString().split('T')[0]}T${booking.time}">
+                    <input name="DateTime" type="datetime-local" id="collectedOn" name="collectedOn" value="${getCollectedOnValue()}">
                 </div>
                 <div class="registered-div2">
                     <div class="registeration-tag2">Received on:</div>
@@ -2383,6 +4198,17 @@ async function loadfunction() {
 `;
 
         document.querySelector(".report-details").appendChild(patientdetails);
+
+        const reportedOnInput = document.getElementById('reportedOn');
+        if (reportedOnInput) {
+            reportedOnInput.addEventListener('input', () => {
+                reportedOnManuallyEdited = true;
+            });
+            reportedOnInput.addEventListener('change', () => {
+                reportedOnManuallyEdited = true;
+            });
+        }
+
         defaultdateandtime();
     }
 
@@ -2556,7 +4382,7 @@ async function loadfunction() {
                         editor.setData(interpretationText.innerHTML);
                     }
 
-                    
+
                 } catch (error) {
                     console.error('❌ Error initializing CKEditor:', error);
                 }
@@ -2622,10 +4448,16 @@ async function loadfunction() {
         return "";
     }
 
-    // Fixed extractTableData function - All rows ka pagebreak track
+    // Fixed extractTableData function - blank/dot-only value-input rows are skipped from final save.
     function extractTableData() {
         const tables = document.querySelectorAll("#tables-container .section table");
         const allTableData = [];
+        const completionMeta = {
+            totalRows: 0,
+            savedRows: 0,
+            skippedRows: 0,
+            hasIncompleteValues: false,
+        };
 
         tables.forEach((table) => {
             const category = table.closest(".grouped-section").querySelector("h2")?.textContent || "Unknown Category";
@@ -2638,15 +4470,14 @@ async function loadfunction() {
             let tableAdvice = null;
             let tableInterpretation = null;
 
-            let lastTestObject = null;
-
             rows.forEach((row) => {
-                // ✅ Har row ke liye pagebreak check karo
                 const pagebreak = row?.cells[0]?.querySelector('input[type="checkbox"]')?.checked || false;
 
                 const testName = row.querySelector(".test-name")?.outerHTML || null;
-                const inputEl = row.querySelector(".unit input");
-                const valueInput = inputEl?.value || null;
+                const inputEl = row.querySelector(".value-input");
+                const rawValue = inputEl?.value ?? "";
+                const trimmedValue = String(rawValue).trim();
+                const valueInput = isBlankOrDotOnlyValue(rawValue) ? null : trimmedValue;
                 const unit = row.querySelector(".unit + td")?.textContent?.trim() || null;
                 const reference = row.querySelector(".reference")?.textContent?.trim() || null;
                 const referenceType = (inputEl?.dataset.referenceType || "numeric").toLowerCase();
@@ -2654,12 +4485,19 @@ async function loadfunction() {
                 const upperValue = parseFloat(inputEl?.getAttribute('data-upper'));
                 let isAbnormal = inputEl?.dataset.isAbnormal === "true";
                 let isBold = false;
+                const rowOrder = row.getAttribute("data-order");
+                const testNameCell = row.querySelector(".test-name");
+                const isFirstParameterRowInGroup =
+                    Boolean(inputEl) &&
+                    testNameCell?.id === "parameters" &&
+                    row.previousElementSibling?.getAttribute("data-order") === rowOrder &&
+                    !row.previousElementSibling?.querySelector(".value-input");
 
                 if (referenceType === "text") {
                     isBold = isAbnormal;
                 } else {
-                    const numericValue = parseFloat(valueInput);
-                    const positive = (valueInput || "").toLowerCase() === "positive";
+                    const numericValue = parseFloat(trimmedValue);
+                    const positive = trimmedValue.toLowerCase() === "positive";
                     if (positive) {
                         isBold = true;
                         isAbnormal = true;
@@ -2669,7 +4507,6 @@ async function loadfunction() {
                     }
                 }
 
-                // Check for CKEditor in the row
                 const editorContainer = row.querySelector("[id^='editorContent']");
                 let editorContent = null;
                 let isDocumented = false;
@@ -2683,83 +4520,96 @@ async function loadfunction() {
                     }
                 }
 
-                // ✅ Main test row
+                const isMultiParameterHeadingRow =
+                    !inputEl &&
+                    Boolean(testName) &&
+                    !editorContent &&
+                    !unit &&
+                    !reference &&
+                    row.querySelector(".test-name")?.textContent?.trim();
+
+                const hasValueField = Boolean(inputEl);
+                const shouldSkipBlankValueRow = hasValueField && !editorContent && isBlankOrDotOnlyValue(rawValue) && !isFirstParameterRowInGroup;
+
+                if (hasValueField) {
+                    completionMeta.totalRows += 1;
+                    if (shouldSkipBlankValueRow) {
+                        completionMeta.skippedRows += 1;
+                        completionMeta.hasIncompleteValues = true;
+                    } else {
+                        completionMeta.savedRows += 1;
+                    }
+                }
+
+                if (shouldSkipBlankValueRow) {
+                    return;
+                }
+
                 if (testName || valueInput || unit || reference || editorContent) {
-                    
-                    const testObject = {
-                        pagebreak: pagebreak,
+                    tableData.push({
+                        pagebreak,
                         testName: editorContent || testName,
                         value: valueInput,
+                        hasValueField: Boolean(inputEl),
+                        isMultiParameterHeading: Boolean(isMultiParameterHeadingRow),
                         unit,
                         reference,
                         referenceType,
                         isAbnormal,
                         isBold,
                         isDocumented,
-                    };
+                    });
+                    return;
+                }
 
-                    tableData.push(testObject);
-                    lastTestObject = testObject;
-                } else {
-                    // ✅ Detail/Remark/Notes rows - Ab yahan bhi separate objects banayenge
-                    const colspanCell = row.querySelector("[colspan='3'], [colspan='4'], [colspan='5']");
-                    if (colspanCell) {
-                        // Individual test remark
-                        if (colspanCell.querySelector("#remarkoftest")) {
-                            const value = colspanCell.querySelector("#remarkoftest").value;
+                const colspanCell = row.querySelector("[colspan='3'], [colspan='4'], [colspan='5']");
+                if (!colspanCell) {
+                    return;
+                }
 
-                            // ✅ Remark ko separate object banao with pagebreak
-                            const remarkObject = {
-                                pagebreak: pagebreak,
-                                testName: null,
-                                value: null,
-                                unit: null,
-                                reference: null,
-                                isDocumented: false,
-                                remark: value  // ✅ Remark property add
-                            };
+                if (colspanCell.querySelector("#remarkoftest")) {
+                    const value = colspanCell.querySelector("#remarkoftest").value;
+                    tableData.push({
+                        pagebreak,
+                        testName: null,
+                        value: null,
+                        unit: null,
+                        reference: null,
+                        isDocumented: false,
+                        remark: value,
+                    });
+                    return;
+                }
 
-                            tableData.push(remarkObject);
-                            lastTestObject = remarkObject; // Update lastTestObject
-                        }
-                        // Table-level remarks/advice/notes
-                        else if (colspanCell.querySelector("textarea")) {
-                            const value = colspanCell.querySelector("textarea").value;
-                            const labelText = colspanCell.previousElementSibling?.textContent?.toLowerCase() || "";
+                if (colspanCell.querySelector("textarea")) {
+                    const value = colspanCell.querySelector("textarea").value;
+                    const labelText = colspanCell.previousElementSibling?.textContent?.toLowerCase() || "";
 
-                            if (labelText.includes("remarks")) {
-                                tableRemarks = value;
-                            } else if (labelText.includes("advice")) {
-                                tableAdvice = value;
-                            } else if (labelText.includes("notes")) {
-                                tableNotes = value;
-                            }
-                        }
-                        // Test details
-                        else {
-                            const innerContent = colspanCell.querySelector(".test-details")?.innerHTML;
-                            if (innerContent) {
-                                // ✅ Details ko separate object banao with pagebreak
-                                const detailObject = {
-                                    pagebreak: pagebreak,
-                                    testName: null,
-                                    value: null,
-                                    unit: null,
-                                    reference: null,
-                                    isDocumented: false,
-                                    details: innerContent  // ✅ Details property add
-                                };
-
-                                tableData.push(detailObject);
-                                lastTestObject = detailObject; // Update lastTestObject
-                            }
-                        }
+                    if (labelText.includes("remarks")) {
+                        tableRemarks = value;
+                    } else if (labelText.includes("advice")) {
+                        tableAdvice = value;
+                    } else if (labelText.includes("notes")) {
+                        tableNotes = value;
                     }
+                    return;
+                }
+
+                const innerContent = colspanCell.querySelector(".test-details")?.innerHTML;
+                if (innerContent) {
+                    tableData.push({
+                        pagebreak,
+                        testName: null,
+                        value: null,
+                        unit: null,
+                        reference: null,
+                        isDocumented: false,
+                        details: innerContent,
+                    });
                 }
             });
 
-            // Check for Interpretation row
-            const interpretationRow = Array.from(table.querySelectorAll("tr")).find(row =>
+            const interpretationRow = Array.from(table.querySelectorAll("tr")).find((row) =>
                 row.querySelector(".interpretation-row")
             );
 
@@ -2783,7 +4633,11 @@ async function loadfunction() {
             }
         });
 
-        return allTableData;
+        return {
+            allTableData,
+            completionMeta,
+            completionStatus: completionMeta.hasIncompleteValues ? "Partially Completed" : "Completed",
+        };
     }
 
     // for saving data 
@@ -2800,6 +4654,13 @@ async function loadfunction() {
         const reportedOn = document.getElementById('reportedOn').value;
         const categorized = document.getElementById('check1').checked;
         const moredetails = document.getElementById('moredetails').value;
+        const completionMeta = extractedData.completionMeta;
+        const completionStatus = extractedData.completionStatus;
+        const resolvedPdfFormat = String(
+            user?.role === "staff"
+                ? user?.tenantId?.adminDetails?.userId?.pdfFormat
+                : user?.pdfFormat
+        ).trim() || "reportFormat1";
 
         try {
             const response = await fetch(`${BASE_URL}/api/v1/user/saveReportData`, {
@@ -2808,25 +4669,40 @@ async function loadfunction() {
                     "Content-Type": "application/json",
                 },
                 body: JSON.stringify({
-                    reportData: extractedData, reg_id: booking.bookingId, booking,
+                    reportData: extractedData.allTableData,
+                    reg_id: booking.bookingId,
+                    booking,
                     collectedOn, receivedOn, reportedOn, categorized, moredetails,
-                    uniquetestArray: uniquetestArray2, isdocumented
+                    uniquetestArray: uniquetestArray2,
+                    isdocumented,
+                    reportCompletionMeta: completionMeta,
+                    reportCompletionStatus: completionStatus,
                 }),
             });
 
             if (!response.ok) {
-                showStatusMessage("Failed to save report data.", "error");
+                let message = "Failed to save report data.";
+                try {
+                    const payload = await response.json();
+                    message = payload?.message || payload?.error || message;
+                } catch {
+                    // Keep the fallback message when the server does not return JSON.
+                }
+                showStatusMessage(message, "error");
                 return false;
             }
 
             if (response.ok && saveOnly) {
                 const result = await response.json();
-                
+
                 const barcodeId = result._id;
+                if (!barcodeId) {
+                    showStatusMessage("Report saved, but redirect could not continue because report ID was missing.", "error");
+                    return false;
+                }
                 showStatusMessage("Report saved successfully. Opening report page...", "success");
-                // return;
-                const url = `${BASE_URL}/${user.role === "staff" ? "admin" : "admin"}/admin.html?page=${user.role === "staff" ? user.tenantId.adminDetails.userId.pdfFormat : user.pdfFormat}&value1=${barcodeId}`;
-                window.location.href = url;
+                const url = `${BASE_URL}/admin/admin.html?page=${encodeURIComponent(resolvedPdfFormat)}&value1=${encodeURIComponent(barcodeId)}`;
+                window.location.assign(url);
                 return true;
             }
             showStatusMessage("Report saved successfully.", "success");
@@ -2842,28 +4718,28 @@ async function loadfunction() {
     async function checkFields(savebtn) {
         const AllFields = document.querySelectorAll("#tables-container .section table tbody tr:not(.exclude)");
         const AllFieldsArray = [];
+        let hasAnyEnteredValue = false;
+
+        if (savebtn && !syncDifferentialPercentageValidation({ focusInvalid: true, showMessage: true })) {
+            return false;
+        }
 
         for (let field of AllFields) {
             const pb = field.cells[0].querySelector('input[type="checkbox"]')?.checked;
             const input = field.querySelector('.value-input');
             const editorContainer = field.querySelector("[id^='editorContent']");
 
-            if (input && input.value.trim() === "" && savebtn) {
-                smoothScrollTo(field);
-                field.focus();
-                showStatusMessage("Please fill all required result fields before final save.", "warn");
-                return false; // Stop after the first empty field
-            }
-            else if (editorContainer) {
+            if (editorContainer) {
                 const editorId = editorContainer.id;
                 const uniqueTestId = editorId.replace('editorContent-', ''); // ✅ Extract uniqueTestId
 
                 // ✅ CKEditor se data lena
                 const editorContent = getEditorContent(uniqueTestId);
 
-                 // Debug
+                // Debug
 
                 if (editorContent) {
+                    hasAnyEnteredValue = true;
                     isdocumented = true;
                     const data = {
                         currentvalue: editorContent,
@@ -2876,6 +4752,9 @@ async function loadfunction() {
             } else if (input) {
                 const data_id = input.getAttribute('data-id');
                 const value = input.value.trim();
+                if (value !== "") {
+                    hasAnyEnteredValue = true;
+                }
                 const referenceType = (input.dataset.referenceType || "numeric").toLowerCase();
                 const lowerValue = parseFloat(input.getAttribute('data-lower'));
                 const upperValue = parseFloat(input.getAttribute('data-upper'));
@@ -2975,7 +4854,7 @@ async function loadfunction() {
             });
 
             if (response.ok) {
-                
+
             } else {
                 showStatusMessage("Failed to update doctor visibility.", "error");
             }
@@ -2989,6 +4868,10 @@ async function loadfunction() {
     document.getElementById("finalBtn").addEventListener("click", async (event) => {
         event.preventDefault(); // Prevent default form submission
         event.target.disabled = true;
+        const reportedOnInput = document.getElementById('reportedOn');
+        if (reportedOnInput && (!reportedOnManuallyEdited || !reportedOnInput.value)) {
+            reportedOnInput.value = getCurrentReportedOnValue();
+        }
         const returned = await checkFields(true);
         if (!returned) {
             event.target.disabled = false;
@@ -3077,7 +4960,7 @@ async function loadfunction() {
             document.getElementById('seconddoctor').checked = data.showseconddoctorsign;
 
         } catch (error) {
-            
+
         }
     }
     populatedoctorvisibility();
@@ -3089,7 +4972,7 @@ async function initialization() {
     try {
         await loadfunction();
     } catch (error) {
-        
+
     } finally {
         loader.style.display = "none";
     }
@@ -3099,23 +4982,51 @@ initialization();
 
 // Function to open the modal
 function openModal(button) {
-    document.getElementById('modal').style.display = 'flex';
+    const modalElement = document.getElementById('modal');
+    const contentBox = document.getElementById('content-box');
+    if (contentBox) {
+        contentBox.classList.add('reference-modal-active');
+    }
+    modalElement.style.display = 'flex';
     // Get the row of the clicked button
     const row = button.closest('tr');
-    // Get the first cell's value
-    const firstColumnValue = row.cells[1].innerText;
-    // Print the value (or use it however you need)
-    fetchDefaultResults(firstColumnValue);
+    const valueInput = row?.querySelector('.value-input');
+    // Prefer the bound parameter name from the row to avoid mismatches with display text.
+    const firstColumnValue = valueInput?.dataset?.paramName || row?.cells?.[1]?.innerText?.trim() || "";
+    const testId = valueInput?.dataset?.testId || "";
+    const parameterId = valueInput?.dataset?.paramId || "";
+    const modal = document.getElementById('modal');
+    if (modal) {
+        modal.dataset.referenceTestName = firstColumnValue;
+        modal.dataset.referenceTestId = testId;
+        modal.dataset.referenceParamId = parameterId;
+    }
+    fetchDefaultResults({
+        testName: firstColumnValue,
+        testId,
+        parameterId
+    });
     // Trigger data collection and send when needed
     const submitBtn = document.getElementById('submit-button');
     submitBtn.onclick = function () {
-        gatherFormData(firstColumnValue);
+        gatherFormData({
+            testName: firstColumnValue,
+            testId,
+            parameterId
+        });
     };
 }
 
 // Function to close the modal
 function closeModal() {
-    document.getElementById('modal').style.display = 'none';
+    const modalElement = document.getElementById('modal');
+    const contentBox = document.getElementById('content-box');
+    if (modalElement) {
+        modalElement.style.display = 'none';
+    }
+    if (contentBox) {
+        contentBox.classList.remove('reference-modal-active');
+    }
 }
 
 // Close the modal if clicked outside the form-section
@@ -3224,8 +5135,122 @@ function deleteRow(element) {
     }
 }
 
+function getCurrentReferencePatient() {
+    const booking = JSON.parse(localStorage.getItem("booking") || "null");
+    return {
+        age: booking?.year || "",
+        gender: booking?.gender || ""
+    };
+}
+
+function convertReferenceAgeToDays(age, unit) {
+    const numericAge = parseInt(age, 10);
+    if (Number.isNaN(numericAge)) return 0;
+    if (unit === "Years" || unit === "years") return numericAge * 365;
+    if (unit === "Months" || unit === "months") return numericAge * 30;
+    if (unit === "Days" || unit === "days") return numericAge;
+    return 0;
+}
+
+function resolveDisplayedReference(dataObject = [], patient = {}) {
+    const patientAgeText = String(patient.age || "").trim();
+    const [patientAge = "", patientAgeUnit = "years"] = patientAgeText.split(" ");
+    const patientAgeInDays = convertReferenceAgeToDays(patientAge, patientAgeUnit);
+
+    for (const result of Array.isArray(dataObject) ? dataObject : []) {
+        const minAgeInDays = convertReferenceAgeToDays(result.minAge, result.minAgeUnit);
+        const maxAgeInDays = convertReferenceAgeToDays(result.maxAge, result.maxAgeUnit);
+        const genderMatches = result.gender === "Any" || result.gender === patient.gender;
+        const ageMatches = patientAgeInDays >= minAgeInDays && patientAgeInDays <= maxAgeInDays;
+
+        if (genderMatches && ageMatches) {
+            return {
+                text: [result.lowerValue, result.upperValue].filter(Boolean).join(" - ") || "-",
+                lowerValue: result.lowerValue || "",
+                upperValue: result.upperValue || ""
+            };
+        }
+    }
+
+    const firstResult = Array.isArray(dataObject) ? dataObject[0] : null;
+    if (firstResult) {
+        return {
+            text: [firstResult.lowerValue, firstResult.upperValue].filter(Boolean).join(" - ") || "-",
+            lowerValue: firstResult.lowerValue || "",
+            upperValue: firstResult.upperValue || ""
+        };
+    }
+
+    return {
+        text: "-",
+        lowerValue: "",
+        upperValue: ""
+    };
+}
+
+function refreshReferenceComparisonEffects(input) {
+    if (!input) return;
+
+    window.__labReportProcessInput?.(input);
+
+    window.__labReportHandleInputChange?.(input);
+}
+
+function syncRenderedReferenceValues(referenceTarget = {}, payload = {}) {
+    const normalizedTargetName = String(referenceTarget?.testName || referenceTarget || "").trim();
+    const normalizedTestId = String(referenceTarget?.testId || "").trim();
+    const normalizedParameterId = String(referenceTarget?.parameterId || "").trim();
+    if (!normalizedTargetName && !normalizedParameterId) return;
+
+    const patient = getCurrentReferencePatient();
+    const referenceType = String(payload.selectType || "numeric").toLowerCase();
+    const resolvedNumericReference = resolveDisplayedReference(payload.dataObject, patient);
+    const referenceText = referenceType === "text"
+        ? (String(payload.text || "").trim() || "-")
+        : resolvedNumericReference.text;
+
+    document.querySelectorAll("table tbody tr").forEach((row) => {
+        const testNameCell = row.cells?.[1];
+        if (!testNameCell) return;
+        const valueInput = row.querySelector(".unit input");
+        const rowTestId = String(valueInput?.dataset?.testId || "").trim();
+        const rowParameterId = String(valueInput?.dataset?.paramId || "").trim();
+
+        const isSameParameter = normalizedParameterId
+            ? rowParameterId === normalizedParameterId
+            : (
+                String(testNameCell.innerText || "").trim() === normalizedTargetName &&
+                (!normalizedTestId || rowTestId === normalizedTestId)
+            );
+
+        if (!isSameParameter) {
+            return;
+        }
+
+        const referenceCell = row.querySelector(".reference");
+        if (referenceCell) {
+            const editIcon = referenceCell.querySelector("i");
+            referenceCell.textContent = "";
+            if (editIcon) {
+                referenceCell.appendChild(editIcon);
+            }
+            referenceCell.append(referenceText);
+        }
+        if (valueInput) {
+            valueInput.dataset.referenceType = referenceType;
+            valueInput.dataset.lower = referenceType === "numeric" ? resolvedNumericReference.lowerValue : "";
+            valueInput.dataset.upper = referenceType === "numeric" ? resolvedNumericReference.upperValue : "";
+            refreshReferenceComparisonEffects(valueInput);
+        }
+    });
+}
+
 // for gathering reference data 
-async function gatherFormData(tname) {
+async function gatherFormData(referenceTarget = {}) {
+    const tname = String(referenceTarget?.testName || referenceTarget || "").trim();
+    const testId = String(referenceTarget?.testId || "").trim();
+    const parameterId = String(referenceTarget?.parameterId || "").trim();
+
     // for normal value data retrieve
     const selectType = document.getElementById('select-type').value;
     let dataObject = {};
@@ -3252,7 +5277,7 @@ async function gatherFormData(tname) {
     await fetch(`${BASE_URL}/api/v1/user/edit-defaultresults`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dataObject, tname, text, selectType })
+        body: JSON.stringify({ dataObject, tname, text, selectType, testId, parameterId })
     })
         .then(async response => {
             const body = await response.json().catch(() => ({}));
@@ -3260,7 +5285,9 @@ async function gatherFormData(tname) {
         })
         .then(result => {
             if (result.ok) {
+                syncRenderedReferenceValues({ testName: tname, testId, parameterId }, { dataObject, text, selectType });
                 window.showStatusMessage?.(result.body?.message || "Reference value updated successfully.", "success");
+                closeModal();
             } else {
                 window.showStatusMessage?.(result.body?.message || "Failed to update reference value.", "error");
             }
@@ -3275,24 +5302,48 @@ async function gatherFormData(tname) {
 
 //-----------------------------fetching data result----------------------------------
 // for fetching referene value 
-async function fetchDefaultResults(testName) {
+async function fetchDefaultResults(referenceTarget = {}) {
     try {
+        const testName = String(referenceTarget?.testName || referenceTarget || "").trim();
+        const testId = String(referenceTarget?.testId || "").trim();
+        const parameterId = String(referenceTarget?.parameterId || "").trim();
+
+        if (!testName) {
+            throw new Error("Missing parameter name for reference edit.");
+        }
+
         const response = await fetch(`${BASE_URL}/api/v1/user/edit-add-defaultresults`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"
             },
-            body: JSON.stringify({ testName })
-        }); // Replace with your API endpoint
-        const data = await response.json();
-        for (const para of data.parameters) {
-            if (para.Para_name === testName) {
-                populateRows(para);
-            }
+            body: JSON.stringify({ testName, testId, parameterId })
+        });
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            throw new Error(data?.message || "Failed to fetch reference value.");
         }
 
+        const matchedParameter = data?.parameter
+            || (Array.isArray(data?.parameters)
+                ? data.parameters.find((para) => {
+                    if (parameterId && String(para?._id || "") === parameterId) {
+                        return true;
+                    }
+                    return para?.Para_name === testName;
+                })
+                : null);
+
+        if (!matchedParameter) {
+            throw new Error(`Reference configuration not found for '${testName}'.`);
+        }
+
+        populateRows(matchedParameter);
     } catch (error) {
         console.error('Error fetching default results:', error);
+        window.showStatusMessage?.(error?.message || "Failed to fetch reference value.", "error");
+        closeModal();
     }
 }
 
@@ -3309,6 +5360,8 @@ function populateRows(parameter) {
         formContainer.style.display = 'none';
         textArea.value = parameter.text;
     } else {
+        document.getElementById('select-type').value = 'numeric';
+        formContainer.style.display = 'block';
         textArea.style.display = 'none';
         formContainer.innerHTML = ''; // Clear any existing rows
     }

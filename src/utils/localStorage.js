@@ -189,4 +189,12 @@ export const deleteLocalFile = async (identifier) => {
     }
 };
 
+export const normalizeStoredUploadPublicId = (identifier) => {
+    if (!identifier) return "";
+    let normalized = String(identifier).trim().replace(/\\/g, "/");
+    if (normalized.startsWith("/uploads/")) return normalized.slice(9);
+    if (normalized.startsWith("uploads/")) return normalized.slice(8);
+    return normalized;
+};
+
 ensureUploadDirectoriesSync();

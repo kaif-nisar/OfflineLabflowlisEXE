@@ -60,7 +60,7 @@ const updateLabController = asyncHandler(async (req, res) => {
             ...(LabName && { LabName }),
             ...(LabAddress && { LabAddress }),
         },
-        { returnDocument: 'after' }
+        { new: true }
     );
     if (!updatedLab) {
         throw new ApiError(404, "Lab not found or update failed");

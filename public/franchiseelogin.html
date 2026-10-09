@@ -3,11 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LabFlow Franchisee Login</title>
+    <title>Lab Flow Franchisee Login</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="theme-color" content="#091a3b" />
-    <link rel="stylesheet" href="/css/offline-fonts.css">
-<link rel="stylesheet" href="/portal-ui.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/portal-ui.css" />
 
     <style>
         /* ══════════════════════════════════
@@ -90,12 +92,9 @@
 
         /* ══════════════════════════════════
            LEFT VISUAL PANEL
-           Uses CSS Grid internally so every
-           section gets exactly equal space
         ══════════════════════════════════ */
         .auth-visual {
             display: grid;
-            /* 4 rows: brand | copy | lottie | metrics */
             grid-template-rows: auto auto 1fr auto;
             gap: 16px;
             padding: 20px 28px;
@@ -124,8 +123,8 @@
         .brand-header {
             display: inline-flex; align-items: center; gap: 12px;
             padding: 11px 18px; border-radius: 16px;
-                        background: rgba(255,255,255,0.97);
-border: 1px solid var(--glass-b);
+            background: rgba(255,255,255,0.97);
+            border: 1px solid var(--glass-b);
             backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
             width: fit-content;
             position: relative; z-index: 1;
@@ -413,15 +412,12 @@ border: 1px solid var(--glass-b);
 
         /* ══════════════════════════════════
            MOBILE ≤640px
-           ONLY login card, perfectly centered
-           NO left panel, NO scroll
         ══════════════════════════════════ */
         @media (max-width: 640px) {
             html { overflow: auto !important; }
             html body { overflow: auto !important; height: auto !important; }
 
             .auth-shell {
-                /* Override grid — use flex center */
                 display: flex !important;
                 align-items: center !important;
                 justify-content: center !important;
@@ -430,12 +426,10 @@ border: 1px solid var(--glass-b);
                 padding: 24px 18px !important;
             }
 
-            /* Hide the entire left visual section */
             .auth-visual {
                 display: none !important;
             }
 
-            /* Right panel fills available width, no extra bg */
             .auth-panel {
                 width: 100% !important;
                 max-width: 420px !important;
@@ -455,7 +449,7 @@ border: 1px solid var(--glass-b);
         }
     </style>
 
-    <script src="/vendor/lottie/lottie.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bodymovin/5.7.6/lottie.min.js"></script>
 </head>
 
 <body class="portal-ui-enhanced">
@@ -470,7 +464,7 @@ border: 1px solid var(--glass-b);
         <div class="visual-body">
             <div class="eyebrow">Franchise Workspace</div>
             <div class="visual-copy">
-                <h1>Stay connected with bookings,<br><em>case progress,</em> reports &amp; operations.</h1>
+                <h1>Stay connected with bookings,<br><em>case progress,</em> reports & operations.</h1>
                 <p>Franchisee teams log in securely, manage daily activity faster, and keep reporting workflows smooth across every device.</p>
             </div>
         </div>
@@ -545,7 +539,8 @@ border: 1px solid var(--glass-b);
     </div>
 </div>
 
-<script src="/js/portal-guard.js"></script>
+<script src="/js/device-lock-screen.js"></script>
+<script src="/js/portal-guard.js?v=2"></script>
 <script src="/js/portal-ui.js"></script>
 <script>
     const BASE_URL = window.location.origin;
@@ -553,7 +548,8 @@ border: 1px solid var(--glass-b);
     document.addEventListener('DOMContentLoaded', () => {
         const guard = window.AppPortalGuard.configure({
             loginPath: '/franchiseelogin.html',
-            homePath:  '/franchiseelogin.html'
+            homePath:  '/index.html',
+            sessionType: 'user'
         });
 
         lottie.loadAnimation({
@@ -570,45 +566,16 @@ border: 1px solid var(--glass-b);
         const closeButton         = document.querySelector('.close');
         const resetPasswordButton = document.getElementById('resetPasswordButton');
         const resetErrorMessage   = document.getElementById('resetErrorMessage');
-        const brandHeader         = document.querySelector('.brand-header');
-        const brandLogo           = brandHeader?.querySelector('img');
-        let superAdminTapCount    = 0;
-        let superAdminTapStartedAt = 0;
-        const parseApiPayload = async (response) => {
-            const text = await response.text();
-            const normalized = String(text || '').trim();
-            if (!normalized || normalized.startsWith('<')) {
-                return null;
-            }
-            try {
-                return JSON.parse(normalized);
-            } catch (error) {
-                return { message: normalized };
-            }
-        };
-        const openSuperAdminLogin = () => {
-            window.location.assign('/login.html?entry=hidden');
-        };
-        const registerSecretTap = () => {
-            const now = Date.now();
-            if (!superAdminTapStartedAt || (now - superAdminTapStartedAt) > 4500) {
-                superAdminTapStartedAt = now;
-                superAdminTapCount = 0;
-            }
-            superAdminTapCount += 1;
-            if (superAdminTapCount >= 5) {
-                superAdminTapCount = 0;
-                superAdminTapStartedAt = 0;
-                openSuperAdminLogin();
-            }
-        };
 
         const showError  = (msg) => { errorMessage.textContent = msg; errorMessage.style.display = msg ? 'block' : 'none'; };
         const hideError  = ()    => { errorMessage.textContent = ''; errorMessage.style.display = 'none'; };
         const setLoading = (v)   => { submitButton.disabled = v; submitButton.textContent = v ? 'Signing in…' : 'Sign In to Portal'; };
 
+        // Industry-standard role isolation: strict:true ensures ONLY a user
+        // (admin/franchisee) session can auto-login here. A superAdmin session
+        // will NOT satisfy this and will NOT redirect to the superAdmin portal.
         guard.autoLoginFromSession({
-            type: 'user', strict: false,
+            type: 'user', strict: true,
             onSuccess: (s) => window.location.replace(s.redirectTo || '/admin/admin.html')
         });
 
@@ -624,8 +591,8 @@ border: 1px solid var(--glass-b);
                     credentials: 'include',
                     body: JSON.stringify({ email: username, username, password })
                 });
-                const data = await parseApiPayload(res);
-                if (!res.ok) { showError(data?.message || 'Login failed. Please try again.'); return; }
+                const data = await res.json();
+                if (!res.ok) { showError(data.message || 'Login failed. Please try again.'); return; }
                 const session = await guard.restoreSession({ type: 'user', strict: true });
                 if (!session?.authenticated) { showError('Session restore failed. Please try again.'); return; }
                 window.location.replace(session.redirectTo || '/admin/admin.html');
@@ -649,8 +616,8 @@ border: 1px solid var(--glass-b);
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ email })
                 });
-                const data = await parseApiPayload(res);
-                if (!res.ok) { resetErrorMessage.textContent = data?.message || 'Failed to send reset link.'; return; }
+                const data = await res.json();
+                if (!res.ok) { resetErrorMessage.textContent = data.message || 'Failed to send reset link.'; return; }
                 forgotPasswordModal.style.display = 'none';
                 showError('Password reset link sent. Please check your inbox.');
             } catch (err) {
@@ -660,19 +627,6 @@ border: 1px solid var(--glass-b);
 
         window.addEventListener('click', (e) => {
             if (e.target === forgotPasswordModal) forgotPasswordModal.style.display = 'none';
-        });
-
-        brandHeader?.addEventListener('click', (event) => {
-            if (brandLogo && (event.target === brandHeader || event.target === brandLogo)) {
-                registerSecretTap();
-            }
-        });
-
-        document.addEventListener('keydown', (event) => {
-            if (event.ctrlKey && event.altKey && event.shiftKey && event.key.toLowerCase() === 'l') {
-                event.preventDefault();
-                openSuperAdminLogin();
-            }
         });
     });
 </script>

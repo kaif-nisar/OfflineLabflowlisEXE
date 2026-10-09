@@ -8,9 +8,6 @@ import { upload } from "../../middlewares/multer_middlewares.js";
 import { authorizeRoles, checkStaffPermission, adminOnly } from "../../middlewares/role.middleware.js";
 import { User } from "../models/user.model.js";
 import { storeLocalFile } from "../utils/localStorage.js";
-import { connectQrCloud, createQrCloudLink } from "../controllers/qrCloudReport.controller.js";
-import { getOfflineReportSyncStatus } from "../utils/offlineReportSync.js";
-import { createOfflineReportLink } from "../controllers/offlineReportLink.controller.js";
 
 import {
   registerSuperAdmin,
@@ -21,6 +18,7 @@ import {
   getAllTenants,
   updateAdminById,
   getTenantById,
+  getUserMonitoringDashboard,
   // updateTenantStatus,
   // deleteTenant,
   // createAdminForTenant,
@@ -36,7 +34,8 @@ import {
   updatePannelOrdersuper,
   tenantAllPanel,
   addpannelcontrollerforadmin,
-  adminEditPannelController
+  adminEditPannelController,
+  deletePanelsController
 } from "../controllers/addpannel.controller.js";
 import {
   addPackagecontroller,
@@ -45,7 +44,8 @@ import {
   editPackageController,
   tenantAllPackage,
   addPackagecontrollerforadmin,
-  adminEditPackageController
+  adminEditPackageController,
+  deletePackagesController
 } from "../controllers/Package.controller.js";
 import {
   getOneTest,
@@ -78,7 +78,8 @@ import {
   editTesttenant,
   updateTestOrdersuper,
   adminAssign,
-  getAllAddOns
+  getAllAddOns,
+  deleteTestsController
 } from "../controllers/addtest.controller.js";
 import {
   addCategory,
@@ -87,7 +88,8 @@ import {
   categoryById,
   fetchCategoriesadmin,
   addCategoryadmin,
-  updatecategoryOrdersuper
+  updatecategoryOrdersuper,
+  deleteCategoriesController
 } from "../controllers/categoryController.js";
 import {
   registerUser,
@@ -150,6 +152,16 @@ import {
   getBusinessAnalytics,
 } from "../controllers/commission.controller.js";
 import { barcodegeneratecontroller } from "../controllers/barcode.controller.js";
+import { generateTrfSlipController } from "../controllers/trf.controller.js";
+import {
+  deleteFormula,
+  getFormulaCatalog,
+  listActiveFormulas,
+  listFormulas,
+  previewFormula,
+  saveFormula,
+  updateFormula,
+} from "../controllers/formula.controller.js";
 import {
   addLabController,
   allLabController,
@@ -163,7 +175,9 @@ import {
   getRecentClients,
   getTopFranchiseesByRevenue,
   getRevenueData,
-  getModelUsageData
+  getModelUsageData,
+  getNotifications,
+  markNotificationsAsRead
 } from "../controllers/analytics.controller.js";
 import {
   loadAllBooking,
@@ -292,6 +306,10 @@ import {
   getAllInvoices, getpdfcontrolleruser, mergePdfsController, certificatepdfgenerator
 } from "../controllers/pdfgenerator.controller.js";
 import { getAllTemplates, uploadImage, deleteImage } from "../controllers/template.controller.js"
+import { saveOfflineReport } from "../controllers/offlineReport.controller.js";
+import { connectQrCloud, createQrCloudLink } from "../controllers/qrCloudReport.controller.js";
+import { createOfflineReportLink } from "../controllers/offlineReportLink.controller.js";
+import { getOfflineReportSyncStatus } from "../utils/offlineReportSync.js";
 import { qrcodecontroller } from "../controllers/qrcode.controller.js"
 import { sendSMS, sendEmail, handleRequest } from "../controllers/sendingReport.controller.js";
 import {
@@ -338,6 +356,7 @@ router.put("/update-model/:tenantId", verifySuperAdmin, authorizeRoles(["superAd
 // router.get("/tenants/:tenantId/stats", verifySuperAdmin, setTenantContext, getTenantStatistics);
 // router.get("/dashboard", verifySuperAdmin, getDashboardStats);
 router.get("/get-all-models", verifySuperAdmin, authorizeRoles(["superAdmin", "staff"]), checkStaffPermission("canManageUsers"), getAllModels);
+router.get("/user-monitoring", verifySuperAdmin, authorizeRoles(["superAdmin", "staff"]), checkStaffPermission("canManageUsers"), getUserMonitoringDashboard);
 router.post("/assign-models", verifySuperAdmin, authorizeRoles(["superAdmin", "staff"]), checkStaffPermission("canManageTest"), assignModelsToFranchisee);
 router.get("/staff", verifySuperAdmin, allStaff);
 router.get("/staff/activities", verifySuperAdmin, authorizeRoles(["superAdmin", "staff"]), checkStaffPermission("canManageUsers"), staffActivity);
@@ -347,9 +366,10 @@ router.get("/tenant-staff/activities", verifyJWT,authorizeRoles(["admin", "franc
 router.get("/dashboard/stats", verifySuperAdmin, getDashboardStats);
 router.get("/dashboard/recent-clients", verifySuperAdmin, getRecentClients);
 router.get("/dashboard/top-franchisees", verifySuperAdmin, getTopFranchiseesByRevenue);
-// router.get("/dashboard/notifications", verifySuperAdmin, getNotifications);
+router.get("/dashboard/notifications", verifySuperAdmin, getNotifications);
+router.post("/dashboard/notifications/mark-read", verifySuperAdmin, markNotificationsAsRead);
 router.get("/dashboard/revenue-data", verifySuperAdmin, getRevenueData);
-router.get("/dashboard/model-usage", verifySuperAdmin, getModelUsageData)
+router.get("/dashboard/model-usage", verifySuperAdmin, getModelUsageData);
 
 // subscription routes
 router.get("/recharge-options", verifyJWT, authorizeRoles(["superAdmin", "admin", "superFranchisee", "franchisee", "subFranchisee", "staff"]), getRechargeOptions);
@@ -921,6 +941,7 @@ router.route("/labs/update").put(verifyJWT, updateLabController);
 router.route("/delete-lab").delete(verifyJWT, deleteLabController);
 // // get all bookings controller
 router.route("/get-bookings").post(verifyJWT, checkStaffPermission("canViewReports"), getAllBookingsController)
+router.route("/bookings/:bookingId/trf-slip").get(verifyJWT, checkStaffPermission("canViewReports"), generateTrfSlipController)
 
 // // get all cancelled bookings controller
 router.route("/get-cancelled-bookings").post(verifyJWT, getAllCancelledBookingsController)
@@ -944,7 +965,7 @@ router.route("/allTestdetails").post(verifyJWT, allTestdetails)
 router.route("/edit-add-defaultresults").post(verifyJWT, defaultResultsGet);
 
 // //editing selected tests defaultresult
-router.route("/edit-defaultresults").post(verifySuperAdmin, editdefaultresult);
+router.route("/edit-defaultresults").post(verifyJWT, editdefaultresult);
 
 
 // // recieving report-data
@@ -976,6 +997,13 @@ router.route("/isreportready").post(bookingreportgenOrnot);
 router.route("/test-database").post(verifySuperAdmin, authorizeRoles(["superAdmin", "staff"]), checkStaffPermission("canManageTest"), allTest);
 
 router.route("/test-database-tenant").post(verifyJWT, tenantTest);
+router.route("/formulas").get(verifyJWT, checkStaffPermission("canManageTest"), listFormulas);
+router.route("/formulas/active").get(verifyJWT, listActiveFormulas);
+router.route("/formulas/catalog").get(verifyJWT, checkStaffPermission("canManageTest"), getFormulaCatalog);
+router.route("/formulas/preview").post(verifyJWT, checkStaffPermission("canManageTest"), previewFormula);
+router.route("/formulas").post(verifyJWT, checkStaffPermission("canManageTest"), saveFormula);
+router.route("/formulas/:id").put(verifyJWT, checkStaffPermission("canManageTest"), updateFormula);
+router.route("/formulas/:id").delete(verifyJWT, checkStaffPermission("canManageTest"), deleteFormula);
 // // report by bookingId
 // router.route("/thirty-days-bookings").post(getthirtydayspreviousBookingsController);
 
@@ -1016,6 +1044,10 @@ router.route("/getting-pdf-data").post(verifyJWT, checkStaffPermission("canManag
 
 // // getting template
 router.route("/generate-qr").post(verifyJWT,qrcodecontroller);
+
+// offline report link endpoints (unauthenticated sync from desktop app)
+router.route("/offline-report-link").post(saveOfflineReport);
+router.route("/offline-reports").post(saveOfflineReport);
 
 // // getting template
 router.route("/reject-barcode").post(verifyJWT,deleteBarcode);
@@ -1227,5 +1259,11 @@ router.route("/add-booking-wallet-amount").post(verifyJWT, checkStaffPermission(
 router.route("/certificatepdfgenerator").post(verifyJWT,certificatepdfgenerator);
 
 router.route("/updateOrder/:id").put(verifyJWT, updateOrder);
+
+// Delete Routes for Tests, Panels, Packages, Categories
+router.route("/delete-tests").post(verifyJWT, checkStaffPermission("Edit Tests"), deleteTestsController);
+router.route("/delete-panels").post(verifyJWT, checkStaffPermission("Edit Tests"), deletePanelsController);
+router.route("/delete-packages").post(verifyJWT, checkStaffPermission("Edit Tests"), deletePackagesController);
+router.route("/delete-categories").post(verifyJWT, checkStaffPermission("Edit Tests"), deleteCategoriesController);
 
 export default router;

@@ -196,8 +196,7 @@
             } catch (error) {
                 console.warn(`Unable to track ${action}:`, error);
                 return null;
-            }
-        }
+    }
 
         function resolveDefaultEmail() {
             if (reportActionHelpers.resolveDoctorEmail) {

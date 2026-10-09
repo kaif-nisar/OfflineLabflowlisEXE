@@ -4,6 +4,32 @@
     <title>Test Database</title>
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
     <style>
+        .page-loader {
+            position: fixed;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background: rgba(242, 237, 243, 0.78);
+            backdrop-filter: blur(4px);
+            z-index: 105000;
+        }
+
+        .page-loader__spinner {
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            border: 6px solid #d7dfe9;
+            border-top-color: #3f4d67;
+            animation: page-loader-spin 0.85s linear infinite;
+        }
+
+        @keyframes page-loader-spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
         .container202 {
             padding: 25px;
         }
@@ -166,6 +192,9 @@
 </head>
 
 <body>
+    <div id="page-loader" class="page-loader" aria-hidden="true">
+        <div class="page-loader__spinner" aria-label="Loading"></div>
+    </div>
     <div class="container202">
         <div class="testheaderDiv">
             <h1>Test database</h1>
@@ -194,10 +223,17 @@
             <span class="protip"><i class="fas fa-lightbulb"></i> ProTip! Drag and Drop row to reorder tests.</span>
         </div>
 
+        <div style="margin-bottom: 15px; display: flex; justify-content: flex-start;">
+            <button id="bulkDeleteBtn" style="background-color: #dc3545; color: white; border: none; padding: 10px 15px; border-radius: 5px; cursor: pointer; display: none; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.2); transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='#c82333'" onmouseout="this.style.backgroundColor='#dc3545'" onclick="bulkDeleteTests()">
+                <i class="fas fa-trash"></i> Delete Selected
+            </button>
+        </div>
+
         <div id="tableContainer">
             <table id="categoriesTable">
                 <thead>
                     <tr>
+                        <th style="width: 40px;"><input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll(this)"></th>
                         <th>ORDER</th>
                         <th>Name</th>
                         <th>PRICE</th>

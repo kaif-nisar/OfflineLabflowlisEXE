@@ -219,6 +219,39 @@
         statusElement.style.display = message ? "block" : "none";
     }
 
+    function isEditableKeyboardTarget(target) {
+        if (!(target instanceof HTMLElement)) return false;
+        if (target.matches("input, textarea, select, [contenteditable='true']")) return true;
+        return Boolean(target.closest(".ck, .ck-editor, .text-dropdown"));
+    }
+
+    function bindPageLevelEnterShortcut({ buttonId = "signOff" } = {}) {
+        if (typeof document === "undefined") {
+            return () => {};
+        }
+
+        const handler = (event) => {
+            if (event.key !== "Enter") return;
+            if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
+
+            const target = event.target instanceof HTMLElement ? event.target : null;
+            if (!target || isEditableKeyboardTarget(target) || target.closest("button, a, [role='button']")) {
+                return;
+            }
+
+            const button = document.getElementById(buttonId);
+            if (!button || button.disabled || button.offsetParent === null) {
+                return;
+            }
+
+            event.preventDefault();
+            button.click();
+        };
+
+        document.addEventListener("keydown", handler, true);
+        return () => document.removeEventListener("keydown", handler, true);
+    }
+
     function sanitizeFileSegment(value, fallback) {
         const cleaned = String(value || "")
             .replace(/[^\w\u0900-\u097F -]/g, "")
@@ -595,6 +628,7 @@
         const {
             retries = 0,
             retryDelayMs = 400,
+            topLoaderSilent = false,
         } = options;
 
         let attempt = 0;
@@ -604,6 +638,7 @@
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify(body),
+                    ...(topLoaderSilent ? { __topLoaderSilent: true } : {}),
                 });
 
                 const rawText = await response.text().catch(() => "");
@@ -680,7 +715,7 @@
                     action,
                     clientActionId,
                 },
-                { retries }
+                { retries, topLoaderSilent: true }
             );
 
             removeQueuedAction(clientActionId);
@@ -753,7 +788,7 @@
         const payload = await postJsonWithRetry(
             "/api/v1/user/report-action-stats",
             { reportId, bookingId },
-            { retries: 1 }
+            { retries: 1, topLoaderSilent: true }
         );
 
         return {
@@ -807,7 +842,7 @@
 
         let resolvedPdfBlob = pdfBlob || null;
         if (!resolvedPdfBlob) {
-            const pdfResponse = await fetch(pdfUrl);
+            const pdfResponse = await fetch(pdfUrl, { __topLoaderSilent: true });
             if (!pdfResponse.ok) {
                 throw new Error("PDF file prepare nahi ho paayi. Please try again.");
             }
@@ -835,6 +870,7 @@
         const response = await fetch("/api/v1/user/send-email", {
             method: "POST",
             body: formData,
+            __topLoaderSilent: true,
         });
 
         const rawText = await response.text().catch(() => "");
@@ -874,6 +910,8 @@
         normalizeCounters,
         normalizeActionHistory,
         setStatus,
+        isEditableKeyboardTarget,
+        bindPageLevelEnterShortcut,
         buildAttachmentFileName,
         resolveDoctorEmail,
         buildShareSummary,

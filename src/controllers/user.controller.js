@@ -3,9 +3,20 @@ import { ApiError } from "../utils/apiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { Ledger } from "../models/ledger.model.js";
 import mongoose from "mongoose";
+import jwt from "jsonwebtoken";
 import { unitdb } from "../models/category.model.js";
 import { User } from "../models/user.model.js";
 import { Tenant } from "../models/tenant.model.js";
+import { registerRefreshToken } from "../utils/refreshTokenRegistry.js";
+import {
+  prepareUserDeviceSession,
+  removeUserDeviceSession,
+  replaceUserDeviceSessionToken,
+  getSessionTokenHash,
+  applyAuthCookiesToResponse,
+  clearAuthCookies,
+  resolveLocationDataFromRequest,
+} from "../../middlewares/auth.middleware.js";
 
 const isChildHierarchyRole = (role, parentRole) => {
   const childRoles = ["superFranchisee", "franchisee", "subFranchisee"];
@@ -31,9 +42,9 @@ const generateAccessAndRefreshToken = async (userId) => {
     const user = await User.findById(userId);
     const accessToken = user.generateAccessToken();
     const refreshToken = user.generateRefreshToken();
-    // save refresh token in data base
+    // save refresh token in data base (multi-device safe list)
 
-    user.refreshToken = refreshToken;
+    registerRefreshToken(user, refreshToken);
     await user.save({ validateBeforeSave: false });
 
     return { accessToken, refreshToken };
@@ -180,19 +191,56 @@ const loginUser = asyncHandler(async (req, res) => {
       accountDeactivated: true,
     });
   }
-  let parent;
   if (!user.parentUser && user.createdBy) {
     user.parentUser = user.createdBy;
   }
-  // Update last login
-  user.lastLogin = new Date();
-  await user.save({ validateBeforeSave: false });
 
-  // Generate access and refresh tokens
-  const { accessToken, refreshToken } = await generateAccessAndRefreshToken(
-    user._id,
-    user.role
-  );
+  // Generate access and refresh tokens and register the device session before granting access.
+  const accessToken = user.generateAccessToken();
+  const refreshToken = user.generateRefreshToken();
+  const decodedAccessToken = jwt.decode(accessToken);
+  const accessTokenExpiresAt = decodedAccessToken?.exp
+    ? new Date(decodedAccessToken.exp * 1000)
+    : null;
+  const deviceFingerprint = String(
+    req.body?.deviceFingerprint ||
+      req.header("x-device-fingerprint") ||
+      ""
+  ).trim();
+  const locationData = resolveLocationDataFromRequest(req);
+  const ipAddress = String(
+    (req.headers?.["x-forwarded-for"] || "").split(",")[0].trim() ||
+      req.ip ||
+      req.socket?.remoteAddress ||
+      ""
+  ).trim();
+  const userAgent = String(req.headers?.["user-agent"] || "").trim();
+
+  // Track this device's refresh token so signing in here does not sign the other
+  // devices out.
+  registerRefreshToken(user, refreshToken);
+
+  await prepareUserDeviceSession(user, {
+    accessToken,
+    deviceFingerprint,
+    ipAddress,
+    userAgent,
+    expiresAt: accessTokenExpiresAt,
+    location: locationData,
+    setFields: {
+      refreshToken,
+      refreshTokenHashes: user.refreshTokenHashes,
+    },
+  });
+
+  await user.logActivity("login", {
+    deviceFingerprint,
+    ipAddress,
+    userAgent,
+    location: locationData,
+    sessionHash: getSessionTokenHash(accessToken),
+    loginAt: new Date(),
+  });
 
   // Create user data for frontend
   const userData = {
@@ -211,17 +259,9 @@ const loginUser = asyncHandler(async (req, res) => {
     },
   };
 
-  // Cookie options for production
-  const options = {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production", // Only HTTPS in production
-    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-    maxAge: 24 * 60 * 60 * 1000, // 24 hours
-  };
-
-  // Set cookies
-  res.cookie("refreshToken", refreshToken, options);
-  res.cookie("accessToken", accessToken, options);
+  // Same cookie options as /api/session so a login never fights the session
+  // cookie (httpOnly + path "/" + a maxAge that matches the token lifetime).
+  applyAuthCookiesToResponse(res, { accessToken, refreshToken });
 
   // Send response with subscription warning if needed
   const response = {
@@ -268,25 +308,40 @@ const loginUser = asyncHandler(async (req, res) => {
 
 //user logout functnality
 const logOutUser = asyncHandler(async (req, res) => {
+  const accessToken =
+    req.cookies?.accessToken ||
+    req.header("x-session-token") ||
+    req.body?.accessToken ||
+    "";
+
+  if (accessToken) {
+    await req.user.logActivity("logout", {
+      sessionHash: getSessionTokenHash(accessToken),
+      ipAddress:
+        String((req.headers?.["x-forwarded-for"] || "").split(",")[0].trim() || req.ip || req.socket?.remoteAddress || "").trim(),
+      userAgent: String(req.headers?.["user-agent"] || "").trim(),
+      logoutAt: new Date(),
+    });
+    await removeUserDeviceSession(req.user._id, accessToken);
+  }
+
   await User.findByIdAndUpdate(
     req.user._id,
     {
       $set: {
-        refreshToken: undefined,
+        refreshToken: null,
+        refreshTokenHashes: [],
       },
     },
     {
-      returnDocument: 'after',
+      new: true,
     }
   );
-  const options = {
-    httpOnly: true,
-    secure: true,
-  };
+
+  clearAuthCookies(res);
+
   return res
     .status(200)
-    .clearCookie("accessToken", options)
-    .clearCookie("refreshToken", options)
     .json(new ApiResponse(200, {}, "User logged Out"));
 });
 
@@ -312,7 +367,9 @@ const getCurrentUser = asyncHandler(async (req, res) => {
 // GENRATER ACCESS TOKEN AGAIN BASE ON REFRESH TOKEN FOR LOGIN LAST EVENT
 const refreshAccessToken = asyncHandler(async (req, res) => {
   const incommingRefreshToken =
-    req.cookie.refreshToken || req.body.refreshToken;
+    req.cookies?.refreshToken ||
+    req.body?.refreshToken ||
+    req.header("x-refresh-token");
 
   if (!incommingRefreshToken) {
     throw new ApiError(402, "unathorized access");
@@ -329,17 +386,89 @@ const refreshAccessToken = asyncHandler(async (req, res) => {
       throw new ApiError(402, "invalid refresh Token");
     }
 
-    const options = {
-      httpOnly: true,
-      secure: true,
-    };
-    const { accessToken, newRefreshToken } =
-      await generateAccessAndRefreshToken(user._id);
+    const currentAccessToken =
+      req.cookies?.accessToken ||
+      req.header("x-session-token") ||
+      req.header("Authorization")?.replace(/^Bearer\s+/i, "") ||
+      "";
+
+    if (user.is_device_restriction_enabled !== false) {
+      if (!currentAccessToken) {
+        throw new ApiError(401, "This session has been revoked. Please login again.");
+      }
+
+      const currentSessionHash = getSessionTokenHash(currentAccessToken);
+      const hasActiveSession = Array.isArray(user.active_sessions)
+        && user.active_sessions.some(
+          (session) => String(session?.session_token || "") === currentSessionHash
+        );
+
+      if (!hasActiveSession) {
+        throw new ApiError(401, "This session has been revoked. Please login again.");
+      }
+    }
+
+    const accessToken = user.generateAccessToken();
+    const newRefreshToken = user.generateRefreshToken();
+    const decodedAccessToken = jwt.decode(accessToken);
+    const accessTokenExpiresAt = decodedAccessToken?.exp
+      ? new Date(decodedAccessToken.exp * 1000)
+      : null;
+    const deviceFingerprint = String(
+      req.body?.deviceFingerprint ||
+        req.header("x-device-fingerprint") ||
+        ""
+    ).trim();
+    const locationData = resolveLocationDataFromRequest(req);
+    const ipAddress = String(
+      (req.headers?.["x-forwarded-for"] || "").split(",")[0].trim() ||
+        req.ip ||
+        req.socket?.remoteAddress ||
+        ""
+    ).trim();
+    const userAgent = String(req.headers?.["user-agent"] || "").trim();
+
+    if (currentAccessToken) {
+      const sessionUpdate = await replaceUserDeviceSessionToken(
+        user._id,
+        currentAccessToken,
+        accessToken,
+        {
+          deviceFingerprint,
+          ipAddress,
+          userAgent,
+          expiresAt: accessTokenExpiresAt,
+          location: locationData,
+        }
+      );
+
+      if (user.is_device_restriction_enabled !== false && !sessionUpdate?.modifiedCount) {
+        throw new ApiError(401, "This session has been revoked. Please login again.");
+      }
+    } else {
+      await prepareUserDeviceSession(user, {
+        accessToken,
+        deviceFingerprint,
+        ipAddress,
+        userAgent,
+        expiresAt: accessTokenExpiresAt,
+        location: locationData,
+        setFields: {
+          refreshToken: newRefreshToken,
+        },
+      });
+    }
+
+    registerRefreshToken(user, newRefreshToken);
+    await user.save({ validateBeforeSave: false });
+
+    applyAuthCookiesToResponse(res, {
+      accessToken,
+      refreshToken: newRefreshToken,
+    });
 
     return res
       .status(200)
-      .cookie("accessToken", accessToken, options)
-      .cookie("refreshToken", newRefreshToken, options)
       .json(
         new ApiResponse(
           200,
@@ -1494,38 +1623,68 @@ const getDashboardData = async (req, res) => {
 
 // Helper function to get user hierarchy statistics
 async function getUserHierarchyStats(userId, role, modelType) {
-  const stats = {};
+  const stats = {
+    superFranchisees: 0,
+    franchisees: 0,
+    subFranchisees: 0,
+    directUsers: 0,
+    indirectUsers: 0,
+    totalUsers: 0,
+  };
 
-  // Count direct users created by this user
-  const userCounts = await User.aggregate([
-    { $match: { createdBy: userId } },
-    { $group: { _id: "$role", count: { $sum: 1 } } },
+  const userObjId = mongoose.Types.ObjectId.isValid(String(userId))
+    ? new mongoose.Types.ObjectId(userId)
+    : userId;
+
+  // Single-query graph traversal aggregation pipeline
+  const [hierarchyResult] = await User.aggregate([
+    { $match: { _id: userObjId } },
+    {
+      $graphLookup: {
+        from: "users",
+        startWith: "$_id",
+        connectFromField: "_id",
+        connectToField: "createdBy",
+        as: "network",
+        maxDepth: 1, // Depth 0 = direct users, Depth 1 = indirect users
+        depthField: "depth"
+      }
+    },
+    {
+      $project: {
+        directUsers: {
+          $filter: {
+            input: "$network",
+            as: "u",
+            cond: { $eq: ["$$u.depth", 0] }
+          }
+        },
+        indirectUsers: {
+          $filter: {
+            input: "$network",
+            as: "u",
+            cond: { $eq: ["$$u.depth", 1] }
+          }
+        }
+      }
+    }
   ]);
 
-  // Initialize counts for all possible roles
-  stats.superFranchisees = 0;
-  stats.franchisees = 0;
-  stats.subFranchisees = 0;
-
-  // Update with actual counts
-  userCounts.forEach((item) => {
-    if (item._id === "superFranchisee") stats.superFranchisees = item.count;
-    if (item._id === "franchisee") stats.franchisees = item.count;
-    if (item._id === "subFranchisee") stats.subFranchisees = item.count;
-  });
-
-  // Get total users in hierarchy (direct and indirect)
-  const createdUsers = await User.find({ createdBy: userId });
-  let totalIndirectUsers = 0;
-
-  // Count indirect users (users created by direct users)
-  for (const user of createdUsers) {
-    const indirectCount = await User.countDocuments({ createdBy: user._id });
-    totalIndirectUsers += indirectCount;
+  if (!hierarchyResult) {
+    return stats;
   }
 
-  stats.directUsers = createdUsers.length;
-  stats.indirectUsers = totalIndirectUsers;
+  const directUsers = hierarchyResult.directUsers || [];
+  const indirectUsers = hierarchyResult.indirectUsers || [];
+
+  directUsers.forEach((u) => {
+    if (u.role === "superFranchisee") stats.superFranchisees++;
+    if (u.role === "franchisee") stats.franchisees++;
+    if (u.role === "subFranchisee") stats.subFranchisees++;
+  });
+
+  stats.directUsers = directUsers.length;
+  stats.indirectUsers = indirectUsers.length;
   stats.totalUsers = stats.directUsers + stats.indirectUsers;
 
   return stats;
@@ -1679,7 +1838,7 @@ const addBookingWalletAmount = async (req, res) => {
         $set: { updatedAt: new Date() }
       },
       {
-        returnDocument: 'after', // Return updated document
+        new: true, // Return updated document
         runValidators: true
       }
     );
@@ -1797,7 +1956,7 @@ const setOverdraft = asyncHandler(async (req, res) => {
     if (typeof overdraftAllowed === 'boolean') updateObj.overdraftAllowed = overdraftAllowed;
     if (typeof overdraftLimit !== 'undefined') updateObj.overdraftLimit = Number(overdraftLimit) || 0;
 
-    const updated = await User.findByIdAndUpdate(userId, { $set: updateObj }, { returnDocument: 'after' });
+    const updated = await User.findByIdAndUpdate(userId, { $set: updateObj }, { new: true });
     if (!updated) return res.status(404).json({ success: false, message: 'User not found' });
 
     // Log activity

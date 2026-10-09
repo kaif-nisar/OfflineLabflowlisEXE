@@ -224,6 +224,18 @@ const TestBookingSchema = new Schema({
     timestamps: true
 })
 
+TestBookingSchema.index({ tenantId: 1, status: 1, createdAt: -1 });
+TestBookingSchema.index({ tenantId: 1, createdAt: -1 });
+TestBookingSchema.index({ tenantId: 1, createdBy: 1, createdAt: -1 });
+TestBookingSchema.index({ tenantId: 1, date: -1 });
+TestBookingSchema.index({ tenantId: 1, createdAt: -1, total: 1 });
+TestBookingSchema.index({ tenantId: 1, createdAt: 1, status: 1, total: 1 });
+TestBookingSchema.index({ tenantId: 1, createdBy: 1, createdAt: 1, status: 1 });
+TestBookingSchema.index({ tenantId: 1, "tableData.testName": 1 });
+TestBookingSchema.index({ tenantId: 1, bookingId: 1 });
+TestBookingSchema.index({ tenantId: 1, patientName: 1 });
+TestBookingSchema.index({ tenantId: 1, patientPhone: 1 });
+
 const newBooking = mongoose.model("testBooking", TestBookingSchema)
 
 export { newBooking }

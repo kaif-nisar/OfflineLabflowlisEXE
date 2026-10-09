@@ -6,6 +6,16 @@ import { User } from "../models/user.model.js";
 import { ApiError } from "../utils/apiError.js";
 import { Ledger } from "../models/ledger.model.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
+import {
+  clearRefreshTokens,
+  registerRefreshToken,
+} from "../utils/refreshTokenRegistry.js";
+import {
+  purgeUserDeviceSessions,
+  applyAuthCookiesToResponse,
+  clearAuthCookies,
+  trimUserDeviceSessionsToLimit,
+} from "../../middlewares/auth.middleware.js";
 
 import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
@@ -52,6 +62,248 @@ const buildGracePeriod = (graceInput, baseEndDate) => {
     isEnabled: enabled,
     graceUntil: enabled ? graceUntil : null,
     note: String(graceInput?.note || graceInput?.graceNote || "").trim(),
+  };
+};
+
+const formatLocationLabel = (location = {}) => {
+  const label = String(location?.label || "").trim();
+  if (label) return label;
+
+  const parts = [location?.city, location?.state, location?.country]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  return parts.length ? parts.join(", ") : "Unknown location";
+};
+
+const normalizeActivityDate = (value) => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const getSessionKeyFromActivity = (activity = {}) => {
+  return String(
+    activity?.details?.sessionHash ||
+      activity?.details?.sessionTokenHash ||
+      activity?.details?.session_token ||
+      activity?.details?.sessionId ||
+      activity?.details?.deviceFingerprint ||
+      activity?.reference?.id ||
+      `${activity?.activityType || "activity"}-${activity?.timestamp || ""}`
+  ).trim();
+};
+
+const getSessionLocation = (session = {}, activity = null) => {
+  const location = session?.location || activity?.details?.location || {};
+  return {
+    latitude: Number.isFinite(Number(location?.latitude)) ? Number(location.latitude) : null,
+    longitude: Number.isFinite(Number(location?.longitude)) ? Number(location.longitude) : null,
+    city: String(location?.city || "").trim(),
+    state: String(location?.state || "").trim(),
+    country: String(location?.country || "").trim(),
+    label: formatLocationLabel(location),
+    source: String(location?.source || "").trim(),
+  };
+};
+
+const isSessionCurrentlyActive = (session = {}) => {
+  const expiresAt = normalizeActivityDate(session?.expires_at);
+  if (expiresAt && expiresAt.getTime() <= Date.now()) {
+    return false;
+  }
+
+  const lastActivityAt = normalizeActivityDate(session?.last_activity_at);
+  if (!lastActivityAt) {
+    return Boolean(session?.session_token);
+  }
+
+  return Date.now() - lastActivityAt.getTime() <= 15 * 60 * 1000;
+};
+
+const buildDailySeries = (activities = [], days = 30) => {
+  const bucket = new Map();
+  for (let index = days - 1; index >= 0; index -= 1) {
+    const date = new Date();
+    date.setDate(date.getDate() - index);
+    const key = date.toISOString().slice(0, 10);
+    bucket.set(key, { label: key, value: 0 });
+  }
+
+  activities.forEach((activity) => {
+    const date = normalizeActivityDate(activity?.timestamp);
+    if (!date) return;
+    const key = date.toISOString().slice(0, 10);
+    if (bucket.has(key)) {
+      bucket.get(key).value += 1;
+    }
+  });
+
+  return Array.from(bucket.values());
+};
+
+const buildHourlySeries = (activities = []) => {
+  const bucket = Array.from({ length: 24 }, (_, hour) => ({ hour, value: 0 }));
+
+  activities.forEach((activity) => {
+    const date = normalizeActivityDate(activity?.timestamp);
+    if (!date) return;
+    bucket[date.getHours()].value += 1;
+  });
+
+  return bucket;
+};
+
+const buildSessionTimeline = (activities = [], activeSessions = []) => {
+  const opened = new Map();
+  const timeline = [];
+  const sorted = [...activities]
+    .filter((activity) => activity?.activityType === "login" || activity?.activityType === "logout")
+    .sort((left, right) => new Date(left.timestamp) - new Date(right.timestamp));
+
+  sorted.forEach((activity) => {
+    const key = getSessionKeyFromActivity(activity);
+    const timestamp = normalizeActivityDate(activity?.timestamp);
+    if (!timestamp || !key) return;
+
+    if (activity.activityType === "login") {
+      opened.set(key, activity);
+      return;
+    }
+
+    if (activity.activityType === "logout") {
+      const loginActivity = opened.get(key);
+      const loginTime = normalizeActivityDate(loginActivity?.timestamp);
+      const logoutTime = timestamp;
+      timeline.push({
+        sessionHash: key,
+        status: "closed",
+        loginAt: loginTime,
+        logoutAt: logoutTime,
+        durationMinutes: loginTime ? Math.max(0, Math.round((logoutTime - loginTime) / 60000)) : 0,
+        deviceFingerprint: loginActivity?.details?.deviceFingerprint || activity?.details?.deviceFingerprint || "",
+        location: getSessionLocation(
+          activeSessions.find((session) => String(session?.session_token || "") === key),
+          loginActivity || activity
+        ),
+      });
+      opened.delete(key);
+    }
+  });
+
+  opened.forEach((loginActivity, key) => {
+    const loginTime = normalizeActivityDate(loginActivity?.timestamp);
+    const matchedSession = activeSessions.find((session) => String(session?.session_token || "") === key);
+    const endTime = normalizeActivityDate(matchedSession?.last_activity_at) || new Date();
+    timeline.push({
+      sessionHash: key,
+      status: "open",
+      loginAt: loginTime,
+      logoutAt: null,
+      durationMinutes: loginTime ? Math.max(0, Math.round((endTime - loginTime) / 60000)) : 0,
+      deviceFingerprint: loginActivity?.details?.deviceFingerprint || "",
+      location: getSessionLocation(matchedSession, loginActivity),
+    });
+  });
+
+  return timeline.sort((left, right) => new Date(right.loginAt || 0) - new Date(left.loginAt || 0));
+};
+
+const buildMonitoringSummary = (user) => {
+  const activities = Array.isArray(user?.activities) ? user.activities : [];
+  const activeSessions = Array.isArray(user?.active_sessions) ? user.active_sessions : [];
+  const now = Date.now();
+  const dayAgo = now - 24 * 60 * 60 * 1000;
+  const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
+  const monthAgo = now - 30 * 24 * 60 * 60 * 1000;
+
+  const loginHistory = activities.filter((activity) => activity.activityType === "login");
+  const logoutHistory = activities.filter((activity) => activity.activityType === "logout");
+  const hourlySeries = buildHourlySeries(activities);
+  const dailySeries = buildDailySeries(activities, 30);
+  const weeklyActivity = activities.filter((activity) => {
+    const date = normalizeActivityDate(activity?.timestamp);
+    return date && date.getTime() >= weekAgo;
+  }).length;
+  const monthlyActivity = activities.filter((activity) => {
+    const date = normalizeActivityDate(activity?.timestamp);
+    return date && date.getTime() >= monthAgo;
+  }).length;
+  const todayActivity = activities.filter((activity) => {
+    const date = normalizeActivityDate(activity?.timestamp);
+    return date && date.toDateString() === new Date().toDateString();
+  }).length;
+  const activeHours = hourlySeries.reduce((max, item) => item.value > max.value ? item : max, hourlySeries[0] || { hour: 0, value: 0 });
+  const inactiveHours = hourlySeries.filter((item) => item.value === 0).length;
+  const sessionTimeline = buildSessionTimeline(activities, activeSessions);
+  const totalActiveTimeMinutes = sessionTimeline.reduce((total, session) => total + Number(session.durationMinutes || 0), 0);
+  const latestSession = activeSessions
+    .slice()
+    .sort((left, right) => new Date(right?.last_activity_at || 0) - new Date(left?.last_activity_at || 0))[0] || null;
+
+  return {
+    activityCounts: {
+      total: activities.length,
+      today: todayActivity,
+      weekly: weeklyActivity,
+      monthly: monthlyActivity,
+      login: loginHistory.length,
+      logout: logoutHistory.length,
+    },
+    activityTrends: {
+      hourlySeries,
+      dailySeries,
+      peakHour: activeHours?.hour ?? 0,
+      inactiveHours,
+    },
+    sessionMetrics: {
+      activeSessionsCount: activeSessions.length,
+      totalActiveTimeMinutes,
+      latestSession: latestSession
+        ? {
+            sessionHash: latestSession.session_token,
+            lastActivityAt: latestSession.last_activity_at,
+            expiresAt: latestSession.expires_at,
+            isActive: isSessionCurrentlyActive(latestSession),
+            location: getSessionLocation(latestSession),
+          }
+        : null,
+    },
+    sessionTimeline,
+  };
+};
+
+const buildMonitoringUserRecord = (user) => {
+  const activeSessions = Array.isArray(user?.active_sessions) ? user.active_sessions : [];
+  const activities = Array.isArray(user?.activities) ? user.activities : [];
+  const sortedSessions = activeSessions
+    .slice()
+    .sort((left, right) => new Date(right?.last_activity_at || 0) - new Date(left?.last_activity_at || 0));
+  const latestSession = sortedSessions[0] || null;
+  const location = latestSession ? getSessionLocation(latestSession) : null;
+  const metrics = buildMonitoringSummary(user);
+
+  return {
+    _id: user._id,
+    fullName: user.fullName,
+    username: user.username,
+    email: user.email,
+    role: user.role,
+    parentRole: user.parentRole,
+    isActive: user.isActive,
+    lastLogin: user.lastLogin,
+    tenant: user.tenantId || null,
+    bookingWallet: user.bookingWallet || 0,
+    maxAllowedDevices: Number.isFinite(Number(user.max_allowed_devices)) ? Math.min(4, Math.max(1, Number(user.max_allowed_devices))) : 1,
+    deviceRestrictionEnabled: user.is_device_restriction_enabled !== false,
+    activeSessionCount: activeSessions.length,
+    lastSessionAt: latestSession?.last_activity_at || null,
+    latestLocation: location,
+    latestDeviceFingerprint: latestSession?.device_fingerprint || "",
+    latestIpAddress: latestSession?.ip_address || "",
+    latestUserAgent: latestSession?.user_agent || "",
+    latestExpiresAt: latestSession?.expires_at || null,
+    recentActivities: activities.slice().sort((left, right) => new Date(right.timestamp) - new Date(left.timestamp)).slice(0, 25),
+    ...metrics,
   };
 };
 
@@ -143,22 +395,20 @@ export const loginSuperAdmin = asyncHandler(async (req, res) => {
   const accessToken = superAdmin.generateAccessToken();
   const refreshToken = superAdmin.generateRefreshToken();
 
-  // Update refresh token in database
-  superAdmin.refreshToken = refreshToken;
+  // Track this browser's refresh token (multi-device safe) and remember the last one
+  registerRefreshToken(superAdmin, refreshToken);
   superAdmin.lastLogin = new Date();
   await superAdmin.save({ validateBeforeSave: false });
 
   console.log(`✅ Login successful for user: ${superAdmin.username}`);
 
-  const options = {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-  };
+  // Same cookie options as the session restore path (httpOnly, path "/", maxAge
+  // that matches the token lifetime) so a login never fights the session cookie
+  // written by /api/session.
+  applyAuthCookiesToResponse(res, { accessToken, refreshToken });
 
   return res
     .status(200)
-    .cookie("accessToken", accessToken, options)
-    .cookie("refreshToken", refreshToken, options)
     .json({
       success: true,
       message: "Super Admin logged in successfully",
@@ -316,18 +566,36 @@ export const createTenant = asyncHandler(async (req, res) => {
               yearly: { price: resolvedPrices.yearly || 0 },
               currency: subscriptionPlan.currency || "INR",
             },
+            deviceRestriction: {
+              isEnabled: req.body.deviceRestriction?.isEnabled !== undefined
+                ? Boolean(req.body.deviceRestriction.isEnabled)
+                : req.body.is_device_restriction_enabled !== undefined
+                  ? (req.body.is_device_restriction_enabled === true || req.body.is_device_restriction_enabled === "true")
+                  : true,
+              maxAllowedDevices: Math.min(4, Math.max(1, Number(req.body.deviceRestriction?.maxAllowedDevices ?? req.body.max_allowed_devices ?? 1) || 1)),
+            },
           },
         ],
         { session }
       );
 
       // ✅ FIXED: Create admin user data with proper validation
+      const isDeviceRestrictionEnabled = req.body.deviceRestriction?.isEnabled !== undefined
+        ? Boolean(req.body.deviceRestriction.isEnabled)
+        : req.body.is_device_restriction_enabled !== undefined
+          ? (req.body.is_device_restriction_enabled === true || req.body.is_device_restriction_enabled === "true")
+          : true;
+
+      const maxAllowedDevices = Math.min(4, Math.max(1, Number(req.body.deviceRestriction?.maxAllowedDevices ?? req.body.max_allowed_devices ?? 1) || 1));
+
       const adminUserData = {
         username: adminDetails.username.toLowerCase().trim(),
         email: adminDetails.email.toLowerCase().trim(),
         fullName: addressDetails.fullName.toLowerCase().trim(),
         password: adminDetails.password,
         role: "admin",
+        is_device_restriction_enabled: isDeviceRestrictionEnabled,
+        max_allowed_devices: maxAllowedDevices,
         bookingWallet: 100000,
         commissionWallet: 0,
         phoneNo: addressDetails.phoneNo ? parseInt(addressDetails.phoneNo) : null,
@@ -555,6 +823,118 @@ const getTenantById = asyncHandler(async (req, res) => {
     .json(new ApiResponse(200, tenant, "Tenant fetched successfully"));
 });
 
+const getUserMonitoringDashboard = asyncHandler(async (req, res) => {
+  const page = Math.max(1, toPositiveInt(req.query.page || 1, 1));
+  const limit = Math.min(100, Math.max(1, toPositiveInt(req.query.limit || 20, 20)));
+  const search = String(req.query.search || "").trim();
+  const roleFilter = String(req.query.role || "all").trim();
+  const statusFilter = String(req.query.status || "all").trim();
+  const requestedUserId = String(req.query.userId || "").trim();
+
+  const query = {
+    role: { $ne: "superAdmin" },
+  };
+
+  if (roleFilter && roleFilter !== "all") {
+    query.role = roleFilter;
+  }
+
+  if (statusFilter === "active") {
+    query.isActive = true;
+  } else if (statusFilter === "inactive") {
+    query.isActive = false;
+  }
+
+  if (search) {
+    query.$or = [
+      { fullName: { $regex: search, $options: "i" } },
+      { username: { $regex: search, $options: "i" } },
+      { email: { $regex: search, $options: "i" } },
+      { state: { $regex: search, $options: "i" } },
+      { city: { $regex: search, $options: "i" } },
+      { district: { $regex: search, $options: "i" } },
+    ];
+  }
+
+  const total = await User.countDocuments(query);
+  const users = await User.find(query)
+    .select(
+      "fullName username email role parentRole isActive lastLogin bookingWallet max_allowed_devices is_device_restriction_enabled active_sessions activities tenantId createdAt updatedAt"
+    )
+    .populate({
+      path: "tenantId",
+      select: "name modelType code status subscriptionPlan analytics",
+    })
+    .sort({ lastLogin: -1, updatedAt: -1, createdAt: -1 })
+    .skip((page - 1) * limit)
+    .limit(limit);
+
+  const mappedUsers = users.map((user) => buildMonitoringUserRecord(user));
+  const allUsers = await User.find(query)
+    .select(
+      "fullName username email role parentRole isActive lastLogin bookingWallet max_allowed_devices is_device_restriction_enabled active_sessions activities tenantId createdAt updatedAt"
+    )
+    .populate({
+      path: "tenantId",
+      select: "name modelType code status subscriptionPlan analytics",
+    })
+    .sort({ lastLogin: -1, updatedAt: -1, createdAt: -1 });
+
+  const summary = allUsers.reduce(
+    (acc, user) => {
+      const record = buildMonitoringUserRecord(user);
+      acc.totalUsers += 1;
+      if (record.isActive) acc.activeUsers += 1;
+      if (record.activeSessionCount > 0) acc.onlineUsers += 1;
+      acc.totalSessions += record.activeSessionCount;
+      acc.totalActivityEvents += record.activityCounts.total;
+      acc.totalDeviceLimit += record.maxAllowedDevices;
+      if (record.latestLocation?.latitude !== null || record.latestLocation?.longitude !== null) {
+        acc.usersWithCoordinates += 1;
+      }
+      return acc;
+    },
+    {
+      totalUsers: 0,
+      activeUsers: 0,
+      onlineUsers: 0,
+      totalSessions: 0,
+      totalActivityEvents: 0,
+      totalDeviceLimit: 0,
+      usersWithCoordinates: 0,
+    }
+  );
+
+  const selectedUserDoc =
+    (requestedUserId
+      ? allUsers.find((user) => String(user._id) === requestedUserId)
+      : allUsers[0]) || null;
+  const selectedUser = selectedUserDoc ? buildMonitoringUserRecord(selectedUserDoc) : null;
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        summary: {
+          ...summary,
+          averageDeviceLimit: summary.totalUsers
+            ? Number((summary.totalDeviceLimit / summary.totalUsers).toFixed(2))
+            : 0,
+          pagination: {
+            page,
+            limit,
+            total,
+            pages: Math.max(1, Math.ceil(total / limit)),
+          },
+        },
+        users: mappedUsers,
+        selectedUser,
+      },
+      "User monitoring data fetched successfully"
+    )
+  );
+});
+
 // Update tenant subscription
 const updateTenantSubscription = asyncHandler(async (req, res) => {
   const { tenantId } = req.params;
@@ -585,7 +965,7 @@ const updateTenantSubscription = asyncHandler(async (req, res) => {
       "subscription.paymentStatus":
         paymentStatus || tenant.subscription.paymentStatus,
     },
-    { returnDocument: 'after' }
+    { new: true }
   );
 
   // Record transaction if payment status changed to paid
@@ -658,6 +1038,28 @@ const updateAdminById = async (req, res) => {
       showRandomBtn: req.body.showRandomBtn,
     };
 
+    // Handle Password Update if provided
+    if (req.body.password && typeof req.body.password === "string" && req.body.password.trim().length > 0) {
+      const bcrypt = (await import("bcrypt")).default;
+      userUpdate.password = await bcrypt.hash(req.body.password.trim(), 10);
+    }
+
+    const currentDeviceLimit = Number.isFinite(Number(adminUser.max_allowed_devices))
+      ? Math.min(4, Math.max(1, Number(adminUser.max_allowed_devices)))
+      : 1;
+    const requestedDeviceLimit = Number.isFinite(Number(req.body.deviceRestriction?.maxAllowedDevices ?? req.body.max_allowed_devices ?? req.body.maxAllowedDevices))
+      ? Math.min(4, Math.max(1, Number(req.body.deviceRestriction?.maxAllowedDevices ?? req.body.max_allowed_devices ?? req.body.maxAllowedDevices)))
+      : currentDeviceLimit;
+    const requestedDeviceRestriction = req.body.deviceRestriction?.isEnabled !== undefined
+      ? req.body.deviceRestriction.isEnabled
+      : req.body.is_device_restriction_enabled;
+    const shouldEnableDeviceRestriction = requestedDeviceRestriction === undefined
+      ? adminUser.is_device_restriction_enabled !== false
+      : requestedDeviceRestriction === true || requestedDeviceRestriction === "true";
+
+    userUpdate.is_device_restriction_enabled = shouldEnableDeviceRestriction;
+    userUpdate.max_allowed_devices = requestedDeviceLimit;
+
     const normalizedPlanType = normalizePlanType(
       req.body.planType || tenant.subscriptionPlan?.planType || adminUser.subscription?.plan
     );
@@ -693,10 +1095,20 @@ const updateAdminById = async (req, res) => {
       status: req.body.isActive,
       "adminDetails.email": req.body.email,
       "adminDetails.username": req.body.username,
+      deviceRestriction: {
+        isEnabled: shouldEnableDeviceRestriction,
+        maxAllowedDevices: requestedDeviceLimit,
+      },
     };
 
     // 3. Apply updates to User
-    await User.findByIdAndUpdate(userId, userUpdate, { returnDocument: 'after' });
+    await User.findByIdAndUpdate(userId, userUpdate, { new: true });
+
+    if (req.body.purgeAllSessions === true || req.body.purgeAllSessions === "true") {
+      await purgeUserDeviceSessions(userId);
+    } else if (shouldEnableDeviceRestriction && requestedDeviceLimit < currentDeviceLimit) {
+      await trimUserDeviceSessionsToLimit(userId, requestedDeviceLimit);
+    }
 
     const findUser = await User.findById(userId);
     // 4. Handle manual activation / payment
@@ -771,7 +1183,7 @@ const updateAdminById = async (req, res) => {
           'subscriptionPlan.price': resolvedPlanPrice,
           'subscriptionPlan.gracePeriod': gracePeriod,
         }
-      }, { returnDocument: 'after' });
+      }, { new: true });
 
       // Update admin user's subscription too (preserve existing startDate if active)
       const userStartToSet = (adminUser.subscription?.isActive && adminUser.subscription?.startDate) ? adminUser.subscription.startDate : now;
@@ -807,7 +1219,7 @@ const updateAdminById = async (req, res) => {
             timestamp: new Date()
           }
         }
-      }, { returnDocument: 'after' });
+      }, { new: true });
 
       // Create ledger entry and update requesting user's bookingWallet (credit)
       if (paymentAmount > 0 && findUser && findUser._id) {
@@ -834,7 +1246,7 @@ const updateAdminById = async (req, res) => {
     }
 
     // 5. Update Tenant with general fields
-    await Tenant.findByIdAndUpdate(tenantId, { $set: tenantUpdate }, { returnDocument: 'after' });
+    await Tenant.findByIdAndUpdate(tenantId, { $set: tenantUpdate }, { new: true });
 
     return res.json({
       success: true,
@@ -862,7 +1274,7 @@ const deactivateTenant = asyncHandler(async (req, res) => {
   const updatedTenant = await Tenant.findByIdAndUpdate(
     tenantId,
     { isActive: false },
-    { returnDocument: 'after' }
+    { new: true }
   );
 
   if (!updatedTenant) {
@@ -942,15 +1354,17 @@ const addSuperStaff = asyncHandler(async (req, res) => {
 });
 
 const logOutSuperAdmin = asyncHandler(async (req, res) => {
-  // Clear cookies and remove refresh token from DB if needed
+  // Revoke the stored refresh tokens of this account and clear the cookies with
+  // the exact same options they were written with.
   const user = req.user;
   if (user) {
-    // Remove refreshToken from DB (optional, if you store it)
-    user.refreshToken = null;
+    clearRefreshTokens(user);
     await user.save({ validateBeforeSave: false });
   }
 
-  res.clearCookie("accessToken").clearCookie("refreshToken").status(200).json({
+  clearAuthCookies(res);
+
+  return res.status(200).json({
     success: true,
     message: "Logged out successfully",
   });
@@ -1078,6 +1492,7 @@ export {
   // l
   getAllTenants,
   getTenantById,
+  getUserMonitoringDashboard,
   updateTenantSubscription,
   deactivateTenant,
   addSuperStaff,

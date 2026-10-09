@@ -19,6 +19,8 @@ const bookedTestSchema = new mongoose.Schema({
       type: Object, // Ensure karo ki yeh object ho
       default: {}   // Yeh ensure karega ki naye documents ke liye empty object aaye
     }
+  }, {
+    timestamps: true
   });
   
 

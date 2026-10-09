@@ -1,7 +1,5 @@
-import mongoose from "mongoose";
 import { Conversation } from "../models/message.model.js";
 import { newBooking } from "../models/NewBooking.model.js";
-
 
 const saveConversation = async (req, res) => {
   try {
@@ -10,7 +8,7 @@ const saveConversation = async (req, res) => {
     const createdBy = req.user._id;
     const role = req.user.role;
 
-    console.log("tenantId in saveConversation:", tenantId?._id);
+    console.log("tenantId in saveConversation:", tenantId._id);
     console.log("createdBy in saveConversation:", createdBy);
 
     // Validate required fields
@@ -106,12 +104,7 @@ const getConversationByBookingId = async (req, res) => {
 
 const getnewnotificationforadmin = async (req, res) => {
   const role = req.user.role;
-  const tenantId = req.user.tenantId?._id ?? req.user.tenantId;
-
-  // If tenantId is missing or not a valid MongoDB ObjectId (e.g. offline mock), return empty gracefully
-  if (!tenantId || !mongoose.Types.ObjectId.isValid(tenantId)) {
-    return res.status(200).json({ message: 'no messages for admin', status: 'empty' });
-  }
+  const tenantId = req.user.tenantId._id;
 
   if (role !== "admin" && role !== "staff") {
     console.log("role is not the admin or staff");
@@ -151,13 +144,8 @@ const getnewnotificationforadmin = async (req, res) => {
 
 const getnewnotificationforfranshisee = async (req, res) => {
   const role = req.user.role;
-  const tenantId = req.user.tenantId?._id ?? req.user.tenantId;
+  const tenantId = req.user.tenantId._id;
   const userId = req.user._id;
-
-  // If tenantId is missing or not a valid MongoDB ObjectId (e.g. offline mock), return empty gracefully
-  if (!tenantId || !mongoose.Types.ObjectId.isValid(tenantId)) {
-    return res.status(200).json({ message: 'no messages for franchisee', status: 'empty' });
-  }
 
   if (role === "admin") {
     console.log("role is not match any to franchisee");
@@ -200,7 +188,7 @@ const changewatchedstatus = async (req, res) => {
   const changedDoc = await Conversation.findByIdAndUpdate(
     { _id: docId },
     edition,
-    { returnDocument: 'after' }
+    { new: true }
   )
 
   if (!changedDoc) {

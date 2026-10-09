@@ -11,6 +11,16 @@ const defaultresultSchema = new Schema({
 });
 
 const parameterSchema = new Schema({
+  originalParameterId: {
+    type: Schema.Types.ObjectId,
+    default: null,
+  },
+  masterParameterKey: {
+    type: String,
+    required: true,
+    trim: true,
+    index: true,
+  },
   forRandom: {
     type: Boolean,
     default: false
@@ -149,6 +159,9 @@ const TestSchema = new Schema(
 );
 
 TestSchema.index({ Name: 1, tenantId: 1 }, { unique: true });
+TestSchema.index({ tenantId: 1, Name: 1 });
+TestSchema.index({ tenantId: 1, "assignedPrices.userId": 1, Name: 1 });
+TestSchema.index({ tenantId: 1, bookingCode: 1 });
 
 // Create the model
 const testSchema =

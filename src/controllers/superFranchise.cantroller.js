@@ -136,7 +136,7 @@ const sfUpdate = asyncHandler(async (req, res) => {
                         logo: logoResult.secure_url,
                         logopublicid: logoResult.public_id
                     },
-                    { returnDocument: 'after' }
+                    { new: true }
                 );
             }
         }
@@ -168,7 +168,7 @@ const sfUpdate = asyncHandler(async (req, res) => {
     const updatedSuperFranchisee = await User.findByIdAndUpdate(
         _id,
         updateData,
-        { returnDocument: 'after' }
+        { new: true }
     );
 
     // Update all sub-franchisees created by this superfranchisee
@@ -223,7 +223,7 @@ const updatePassword = asyncHandler(async (req, res) => {
             password: hashedPassword,
         },
         {
-            returnDocument: 'after',
+            new: true,
         }
     );
     return res.status(200).json(new ApiResponse(201, { message: "Password updated successfully" }, updatedSuperFranchisee, { success: true }));

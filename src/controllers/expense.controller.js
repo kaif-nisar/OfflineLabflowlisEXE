@@ -153,7 +153,7 @@ const editExpense = async (req, res) => {
         notes,
         paymentMode
       },
-      { returnDocument: 'after' } // Return updated document
+      { new: true } // Return updated document
     );
 
     if (!updatedExpense) {

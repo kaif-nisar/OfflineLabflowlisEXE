@@ -823,7 +823,6 @@
         } catch (error) { console.error('Error fetching template images:', error); }
         return null;
     }
-    };
 
     // await convertAllImagesToBase64();
     await signoffdivfunction();

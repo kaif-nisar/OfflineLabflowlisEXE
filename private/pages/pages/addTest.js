@@ -20,6 +20,66 @@
         }
     }
 
+    const sampleTypeModal = document.getElementById('exampleModal');
+    const openSampleModalBtn = document.getElementById('openSampleModal');
+    const closeSampleModalBtn = document.getElementById('closeSampleModal');
+    const closeSampleModalFooterBtn = document.getElementById('closeSampleModalFooter');
+
+    function openSampleTypeModal() {
+        if (!sampleTypeModal) return;
+        if (sampleTypeModal.parentElement !== document.body) {
+            document.body.appendChild(sampleTypeModal);
+        }
+        sampleTypeModal.classList.add('show');
+        sampleTypeModal.setAttribute('aria-hidden', 'false');
+        document.body.style.overflow = 'hidden';
+        const sampleNameInput = document.getElementById('sample-name');
+        if (sampleNameInput) {
+            sampleNameInput.focus();
+        }
+    }
+
+    function closeSampleTypeModal() {
+        if (!sampleTypeModal) return;
+        sampleTypeModal.classList.remove('show');
+        sampleTypeModal.setAttribute('aria-hidden', 'true');
+        document.body.style.overflow = '';
+    }
+
+    if (openSampleModalBtn) {
+        openSampleModalBtn.addEventListener('click', openSampleTypeModal);
+    }
+
+    if (closeSampleModalBtn) {
+        closeSampleModalBtn.addEventListener('click', closeSampleTypeModal);
+    }
+
+    if (closeSampleModalFooterBtn) {
+        closeSampleModalFooterBtn.addEventListener('click', closeSampleTypeModal);
+    }
+
+    if (sampleTypeModal) {
+        sampleTypeModal.addEventListener('click', (event) => {
+            if (event.target === sampleTypeModal) {
+                closeSampleTypeModal();
+            }
+        });
+    }
+
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            closeSampleTypeModal();
+        }
+    });
+
+    window.cleanupCurrentPage = () => {
+        closeSampleTypeModal();
+        if (sampleTypeModal && sampleTypeModal.parentElement === document.body) {
+            sampleTypeModal.remove();
+        }
+        document.body.style.overflow = '';
+    };
+
     //Function to load categories and populate the dropdown
     async function loadCategories() {
         try {
@@ -172,6 +232,9 @@ function addParameter() {
     const table = document.getElementById('parameters-table2').getElementsByTagName('tbody')[0];
     const newRow = table.insertRow();
     orderId++;
+    newRow.dataset.parameterId = "";
+    newRow.dataset.masterParameterKey = "";
+    newRow.dataset.originalParameterId = "";
     
     newRow.innerHTML = `
         <td><span class="remove-link" id="remove-link">🗑️</span></td>
@@ -316,7 +379,8 @@ function addParameter() {
     fetchandpopulatesamples();
 
     document.getElementById("sampleaddbtn").addEventListener("click", async () => {
-        const sampeName = document.getElementById("sample-name").value;
+        const sampleNameInput = document.getElementById("sample-name");
+        const sampeName = sampleNameInput.value.trim();
         const samplebyuser = JSON.parse(localStorage.getItem("superAdminData"));
         const alert = document.getElementById("alert");
 
@@ -332,11 +396,13 @@ function addParameter() {
             const data = await response.json().catch(() => ({}));
 
             if (response.ok) {
-                fetchandpopulatesamples();
+                await fetchandpopulatesamples();
                 alert.innerHTML = `${data.message}<button data-dismiss="alert" class="alert-dismissible close">✖</button>`;
                 alert.classList.remove("alert-danger", "fade");
                 alert.classList.add("alert-success");
                 alert.classList.add("show");
+                sampleNameInput.value = "";
+                setTimeout(() => closeSampleTypeModal(), 350);
             } else {
                 alert.innerHTML = `${data.message}<button data-dismiss="alert" class="alert-dismissible close">✖</button>`;
                 alert.classList.remove("alert-success", "fade");
@@ -391,6 +457,9 @@ document.getElementById('submitbBtn').addEventListener('click', async function (
     const parameterRows = document.querySelectorAll('#parameters-table2 tbody tr');
     parameterRows.forEach(row => {
         const parameterData = {
+            parameterId: row.dataset.parameterId || "",
+            masterParameterKey: row.dataset.masterParameterKey || "",
+            originalParameterId: row.dataset.originalParameterId || "",
             order: row.cells[1].querySelector('input').value,
             Para_name: row.cells[2].querySelector('input').value,
             unit: row.cells[3].querySelector('select').value,
@@ -434,7 +503,7 @@ document.getElementById('submitbBtn').addEventListener('click', async function (
         formData.parameters.push(parameterData);
     });
 
-    const alert = document.querySelector(".alert");
+    const alert = document.querySelector(".page-alert");
     
     await fetch(`${BASE_URL}/api/v1/user/make-test-tenant`, {
         method: 'POST',

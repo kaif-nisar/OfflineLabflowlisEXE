@@ -676,11 +676,18 @@ if (process.env.NODE_ENV === "production" && !OFFLINE_MODE && !DESKTOP_RUNTIME) 
 import targetRouter from "./src/routes/target.routes.js";
 import maintenanceRouter from "./src/routes/maintenance.routes.js";
 import offlineMigrationRouter from "./src/routes/offlineMigration.routes.js";
+import copilotRouter from "./src/copilot/copilot.routes.js";
+import qrReportRouter from "./src/routes/qrReport.routes.js";
+import offlineReportRouter from "./src/routes/offlineReport.routes.js";
 
+app.use("/api/v1/copilot", copilotRouter);
 app.use("/api/v1/user", userRouter);
 app.use("/api/v1/target", targetRouter);
 app.use("/api/maintenance", maintenanceRouter);
 app.use("/api/v1/offline-migration", offlineMigrationRouter);
+app.use("/api/v1/qr-reports", qrReportRouter);
+app.use("/api/v1/offline-reports", offlineReportRouter);
+app.use("/r", qrReportRouter);
 
 // Health Check Route
 app.get('/health', (req, res) => {

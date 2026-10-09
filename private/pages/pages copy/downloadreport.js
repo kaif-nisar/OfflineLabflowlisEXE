@@ -14,7 +14,7 @@ async function loadInfoandDownloadreport() {
 
     async function fetchreport() {
         try {
-            const response = await fetch(`https://www.LabFlow/api/v1/user/ReportData`, {
+            const response = await fetch(`https://lab.occuhealth.in/api/v1/user/ReportData`, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json"
@@ -47,7 +47,7 @@ async function loadInfoandDownloadreport() {
 
         try {
             // loader.style.display = 'flex';
-            const response = await fetch(`https://www.LabFlow/api/v1/user/get-pdf`, {
+            const response = await fetch(`https://lab.occuhealth.in/api/v1/user/get-pdf`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

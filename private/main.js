@@ -6,8 +6,9 @@
 window.BASE_URL = window.location.origin;
 const portalGuard = window.AppPortalGuard.configure({
     loginPath: "/login.html",
-    homePath: "/index.html",
+    homePath: "/superAdmin/superAdmin.html",
     useFetchGuard: true,
+    sessionType: "superAdmin",
 });
 
 function loaderfunction() {
@@ -19,11 +20,23 @@ loaderfunction();
 // Initialize when DOM is ready
 // Initialize when DOM is ready
 document.addEventListener("DOMContentLoaded", function () {
+    portalGuard.ensureSession({
+        type: "superAdmin",
+        strict: true,
+        loginPath: "/login.html",
+    }).catch((error) => {
+        console.error("Super admin session validation failed:", error);
+    });
+
     // Track loaded resources to prevent duplicates
     // Add event listener to the logout button
     const logoutButton = document.getElementById("logout");
     if (logoutButton) {
-        logoutButton.addEventListener("click", logout);
+        logoutButton.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            logout();
+        });
     }
 
     window.appState = {
@@ -51,6 +64,9 @@ function initNavigation() {
 
             // Get the page to load
             const pageToLoad = this.getAttribute("data-page");
+            if (!pageToLoad) {
+                return;
+            }
 
 
             // Toggle sidebar on mobile (if open)
@@ -79,8 +95,12 @@ const container = document.querySelector('.content');
 
 navItems.forEach(item => {
     item.addEventListener('click', (e) => {
-        e.preventDefault();
         const page = item.getAttribute('data-page');
+        if (!page) {
+            return;
+        }
+
+        e.preventDefault();
         // Use the router instance if available
         if (window.router) {
             window.router.loadPage(page);
@@ -351,27 +371,33 @@ class SPARouter {
     }
 
     handlePageLoadError(error) {
-        // Check if container exists before manipulating it
         if (!this.container) {
-            console.error('Cannot handle page load error: no container available');
-            console.error('Original error:', error);
+            console.error('Cannot handle page load error: no container available', error);
             return;
         }
 
         const statusMatch = String(error?.message || "").match(/\b(\d{3})\b/);
         const status = Number(statusMatch?.[1] || 500);
 
-        portalGuard.redirectToErrorPage({
-            status,
-            title: status === 404 ? "Page Not Found" : status === 401 ? "Session Expired" : "Something Went Wrong",
-            message:
-                status === 401
-                    ? "Your session is no longer valid. Please login again to continue."
-                    : "The requested page could not be loaded.",
-            loginPath: "/login.html",
-            homePath: "/superAdmin/superAdmin.html",
-            clearSession: status === 401,
-        });
+        if (status === 401) {
+            portalGuard.restoreSession({ type: "superAdmin", strict: false }).then((sess) => {
+                if (!sess?.authenticated && !sess?.transient) {
+                    window.location.replace(`/login.html?sessionExpired=1&returnTo=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+                }
+            });
+            return;
+        }
+
+        this.container.innerHTML = `
+            <div style="padding: 28px; margin: 20px auto; max-width: 600px; background: #fff; border: 1px solid #e2e8f0; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.06); text-align: center;">
+                <div style="font-size: 36px; color: #e53e3e; margin-bottom: 12px;"><i class="fas fa-exclamation-circle"></i></div>
+                <h3 style="color: #2d3748; margin-bottom: 8px;">Failed to Load Page</h3>
+                <p style="color: #718096; margin-bottom: 20px; font-size: 14px;">${error?.message || "An unexpected error occurred while loading this section."}</p>
+                <button type="button" onclick="window.router?.loadPage(window.router?.currentPageLoaded || 'dashboard')" style="background: #4361ee; color: #fff; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer;">
+                    <i class="fas fa-sync-alt" style="margin-right: 6px;"></i> Retry Loading
+                </button>
+            </div>
+        `;
     }
 
     // Method to manually navigate to a page
@@ -479,11 +505,8 @@ async function initializeRouter() {
 }
 
 // Initialize the router when DOM is ready
-document.addEventListener('DOMContentLoaded', initializeRouter);
-
-// Fallback for cases where the script is loaded after DOM is ready
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initializeRouter);
+    document.addEventListener('DOMContentLoaded', initializeRouter, { once: true });
 } else {
     initializeRouter();
 }
@@ -571,27 +594,40 @@ function initRevenueChart() {
 
 // Logout functionality
 function logout() {
-    fetch(`${BASE_URL}/api/v1/user/logout/superAdmin`, {
-        method: "POST",
-        credentials: "include",
-    })
-        .then((response) => {
-            if (response.ok) {
-                portalGuard.clearStoredSession();
-                sessionStorage.clear();
-                console.log("Logout successful");
-                window.location.href = `${BASE_URL}/login.html`;
-            } else {
-                throw new Error("Logout failed");
-            }
-        })
-        .catch((error) => {
-            console.error("Error:", error);
-            portalGuard.handleSessionFailure({
-                loginPath: "/login.html",
-                message: "Your session could not be closed cleanly. Please login again.",
-            });
+    const redirectToLogin = () => {
+        portalGuard.clearStoredSession();
+        sessionStorage.clear();
+        window.location.replace(`${window.BASE_URL}/login.html?forceLogin=1`);
+    };
+
+    const tryLogout = async (endpoint) => {
+        const response = await fetch(`${window.BASE_URL}${endpoint}`, {
+            method: "POST",
+            credentials: "include",
+            keepalive: true,
         });
+
+        if (!response.ok) {
+            throw new Error(`Logout failed for ${endpoint}`);
+        }
+    };
+
+    (async () => {
+        try {
+            try {
+                await tryLogout("/api/v1/user/logout/superAdmin");
+            } catch (primaryError) {
+                console.warn("Super admin logout endpoint failed, trying generic logout:", primaryError);
+                await tryLogout("/api/v1/user/logout");
+            }
+
+            console.log("Logout successful");
+            redirectToLogin();
+        } catch (error) {
+            console.error("Logout error:", error);
+            redirectToLogin();
+        }
+    })();
 }
 
 /**

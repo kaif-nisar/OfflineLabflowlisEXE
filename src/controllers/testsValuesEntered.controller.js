@@ -14,7 +14,7 @@ const saveOrUpdateBookedTest = async (req, res) => {
         const updatedRecord = await bookedTestsresult.findOneAndUpdate(
             { BookingId }, // Condition: Agar ye BookingId ka record milta hai to update hoga
             { $set: { EnteredValues } }, // Update ya naya data set karega
-            { returnDocument: 'after', upsert: true } // Agar nahi milta to new create karega
+            { new: true, upsert: true } // Agar nahi milta to new create karega
         );
 
         return res.status(updatedRecord ? 200 : 201).json({

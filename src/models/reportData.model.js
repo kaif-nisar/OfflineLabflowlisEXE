@@ -23,6 +23,10 @@ const tabledataSchema = new Schema({
         type: Boolean,
         default: false
     },
+    isMultiParameterHeading: {
+        type: Boolean,
+        default: false
+    },
     pagebreak:{
         type: Boolean,
         default: false
@@ -216,6 +220,10 @@ const reportData = new Schema({
         type: String,
         default: 'On Hold'
     },
+    completionMeta: {
+        type: Schema.Types.Mixed,
+        default: () => ({})
+    },
     reg_id: {
         type: String
     },
@@ -256,7 +264,9 @@ const reportData = new Schema({
     { timestamps: true }
 )
 
+reportData.index({ tenantId: 1, bookingId: 1 });
+reportData.index({ tenantId: 1, createdAt: -1 });
+
 const reports = mongoose.model("report", reportData);
 
 export { reports };
-

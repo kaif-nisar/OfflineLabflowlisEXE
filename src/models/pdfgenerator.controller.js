@@ -10,6 +10,7 @@ import * as cheerio from 'cheerio';
 import { invoices } from '../models/invoicepdf.model.js';
 import { certificates } from '../models/certificate.model.js';
 import { defaultpdfsetting } from '../models/defaultpdfsettings.model.js';
+import { getPuppeteerLaunchOptions } from '../utils/puppeteerRuntime.js';
 
 // Fix for __dirname in ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -230,15 +231,7 @@ const pdfgeneratorcontroller2 = async ({ pdfformat, layerone, showInvest, BoldRo
 
 
     try {
-        const browser = await puppeteer.launch({
-            headless: "new",
-            args: [
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu"
-            ]
-        });
+        const browser = await puppeteer.launch(getPuppeteerLaunchOptions());
         
         const page = await browser.newPage();
 
@@ -433,7 +426,7 @@ const pdfgeneratorcontroller2 = async ({ pdfformat, layerone, showInvest, BoldRo
             { reportId: reportId }, // Or use some identifier
             updateData,
             {
-                returnDocument: 'after',  // Return the updated document
+                new: true,  // Return the updated document
                 upsert: true, // Create new record if it doesn't exist
             }
         );
@@ -780,7 +773,7 @@ async function generateSinglePdfBuffer(mergedValues, user) {
     const marginRightPx = mergedValues.marginRight ? cmToPx(parseFloat(mergedValues.marginRight)) : 0;
     const marginLeftPx = mergedValues.marginLeft ? cmToPx(parseFloat(mergedValues.marginLeft)) : 0;
 
-    const browser = await puppeteer.launch({});
+    const browser = await puppeteer.launch(getPuppeteerLaunchOptions());
     const page = await browser.newPage();
 
     const contentWithCssAndImage = `
@@ -1066,7 +1059,7 @@ const savingPdfDatacontroller = async (req, res) => {
         }, // Or use some identifier
         updateFields,
         {
-            returnDocument: 'after',  // Return updated document
+            new: true,  // Return updated document
             upsert: true, // Create new record if it doesn't exist
         }
     );
@@ -1109,7 +1102,7 @@ const invoicepdfgenerator = async (req, res) => {
     let { invoiceHtml, invoicecss, billnumber, bookingId, generatedBy, billingPrice } = req.body;
 
     try {
-        const browser = await puppeteer.launch();
+        const browser = await puppeteer.launch(getPuppeteerLaunchOptions());
         const page = await browser.newPage();
 
         // Viewport set karein
@@ -1154,7 +1147,7 @@ const invoicepdfgenerator = async (req, res) => {
                 bookingId
             },
             {
-                returnDocument: 'after',
+                new: true,
                 upsert: true
             }
         );
@@ -1239,7 +1232,7 @@ const certificatepdfgenerator = async (req, res) => {
     // }
 
     try {
-        const browser = await puppeteer.launch();
+        const browser = await puppeteer.launch(getPuppeteerLaunchOptions());
         const page = await browser.newPage();
 
         const contentwithhtmlcss = `
@@ -1299,5 +1292,4 @@ export {
     mergePdfsController
 
 };
-
 

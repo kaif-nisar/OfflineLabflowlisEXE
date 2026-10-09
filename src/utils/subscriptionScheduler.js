@@ -5,6 +5,7 @@ import nodemailer from "nodemailer";
 import { Subscriber } from "../models/subscribe.model.js";
 import { Tenant } from "../models/tenant.model.js";
 import { cleanupCustomizationsOnStartup } from "./customizationCleanup.js";
+import { cleanupExpiredBookingsByTenant } from "./bookingRetentionCleanup.js";
 import { syncPendingOfflineReports } from "./offlineReportSync.js";
 import {
   advanceSubscriberAutomation,
@@ -70,6 +71,19 @@ export const scheduleCustomizationCleanup = () => {
       console.log("[Customization Cleanup] Scheduled cleanup completed");
     } catch (error) {
       console.error("[Customization Cleanup] Scheduled cleanup failed:", error);
+    }
+  });
+};
+
+// Cleanup old tenant bookings - runs daily at 3:30 AM
+export const scheduleBookingRetentionCleanup = () => {
+  cron.schedule("30 3 * * *", async () => {
+    try {
+      console.log("[Booking Retention] Scheduled cleanup started");
+      await cleanupExpiredBookingsByTenant();
+      console.log("[Booking Retention] Scheduled cleanup completed");
+    } catch (error) {
+      console.error("[Booking Retention] Scheduled cleanup failed:", error);
     }
   });
 };
@@ -216,6 +230,7 @@ export const initializeSchedulers = () => {
   scheduleSubscriptionCheck();
   scheduleExpiryWarnings();
   scheduleCustomizationCleanup();
+  scheduleBookingRetentionCleanup();
   scheduleOfflineReportSync();
   scheduleNewsletterAutomation();
   // Run once on server start
